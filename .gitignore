@@ -1,0 +1,22 @@
+# Generated build products, test images, reports, and IDE state.
+/build*/
+/bin/
+/out/
+/validation/
+/.vs/
+/.vscode/
+CMakeUserPresets.json
+*.exe
+*.dll
+*.obj
+*.o
+*.pdb
+*.ilk
+*.lib
+*.exp
+*.res
+*.zip
+*.png
+*.rollback.ini
+*.diagnostic.ini
+*.context-debug.txt
