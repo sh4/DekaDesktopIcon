@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+max_line_length = 100
+
+# Preserve compatibility with Windows PowerShell.
+[*.ps1]
+charset = utf-8-bom
+
+[.clang-format]
+indent_size = 2
+
+[.clang-tidy]
+indent_size = 2
+
+# Markdown uses trailing spaces for explicit line breaks.
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
