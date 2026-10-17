@@ -1,0 +1,89 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 sh4
+name: Build release binaries
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Windows x64 Release
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      !github.event.repository.fork
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Keep authorization inline and in the build job: a partial re-run must
+      # check the current permissions again before any repository code executes.
+      - name: Require repository administrators
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ACTOR: ${{ github.actor }}
+          RELEASE_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_EVENT_NAME -ne 'workflow_dispatch' -or
+              $env:GITHUB_REF -cne "refs/heads/$env:DEFAULT_BRANCH") {
+              throw 'Release builds require a manual dispatch on the default branch.'
+          }
+          $headers = @{
+              Accept = 'application/vnd.github+json'
+              Authorization = "Bearer $env:GH_TOKEN"
+              'X-GitHub-Api-Version' = '2026-03-10'
+          }
+          $actors = @($env:RELEASE_ACTOR, $env:RELEASE_TRIGGERING_ACTOR)
+          if ([string]::IsNullOrWhiteSpace($actors[0]) -or
+              [string]::IsNullOrWhiteSpace($actors[1])) {
+              throw 'The workflow actor could not be determined.'
+          }
+          foreach ($actor in ($actors | Select-Object -Unique)) {
+              $login = [Uri]::EscapeDataString($actor)
+              $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/collaborators/$login/permission"
+              $access = Invoke-RestMethod -Uri $uri -Headers $headers -TimeoutSec 30 -MaximumRedirection 0
+              if ($access.permission -cne 'admin') {
+                  throw "Repository admin permission is required: $actor"
+              }
+              Write-Output "Repository administrator verified: $actor"
+          }
+
+      - name: Check out the dispatched commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Test release authorization
+        run: ./tests/Test-ReleaseAuthorization.ps1
+
+      - name: Build release binaries
+        run: ./build.ps1 -Configuration Release -OutputDirectory ./build/release-bin
+
+      - name: Package release binaries
+        id: package
+        run: ./scripts/New-ReleasePackage.ps1
+
+      - name: Upload release package and checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.package.outputs.package-name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/release/*.zip
+            build/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          include-hidden-files: false

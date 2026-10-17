@@ -1,0 +1,6 @@
+# Changes to the release controls require the repository owner's review when
+# "Require review from Code Owners" is enabled in the default-branch ruleset.
+/.github/ @sh4
+/build.ps1 @sh4
+/CMakeLists.txt @sh4
+/scripts/ @sh4

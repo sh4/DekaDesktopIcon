@@ -31,6 +31,8 @@ cmake --build build/cmake --config Release
 
 CMake の実行ファイルと DLL は `build/cmake/bin` に生成します。バイナリ・中間生成物・検証画像・検証結果は Git の管理対象から除外しています。検証用 PNG はスクリプトが生成します。
 
+GitHub Actions では **Build release binaries** を管理者が手動実行し、Windows x64 の配布用 ZIP と SHA-256 を取得できます。実行方法と GitHub 側の保護設定は [リリース手順](docs/RELEASING.md) を参照してください。
+
 ## 使い方
 
 1. `DekaDesktopIcon.exe` を起動し、表示サイズを選んで「Explorer に適用」を押します。

@@ -20,6 +20,9 @@ indent_size = 2
 [.clang-tidy]
 indent_size = 2
 
+[*.yml]
+indent_size = 2
+
 # Markdown uses trailing spaces for explicit line breaks.
 [*.md]
 trim_trailing_whitespace = false
