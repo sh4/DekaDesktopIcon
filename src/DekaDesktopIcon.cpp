@@ -381,6 +381,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 } else if (arg == L"--validate-interaction") {
                     command = Command::ValidateInteraction;
                     capture = value();
+                } else if (arg == L"--validate-drop-feedback") {
+                    command = Command::ValidateDropFeedback;
+                    capture = value();
                 } else if (arg == L"--validate-shell-behavior") {
                     command = Command::ValidateShellBehavior;
                     capture = value();

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sh4
 cmake_minimum_required(VERSION 3.21)
-project(DekaDesktopIcon VERSION 1.4.2 LANGUAGES CXX)
+project(DekaDesktopIcon VERSION 1.4.3 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "DekaDesktopIcon requires the Windows x64 MSVC toolchain.")
@@ -33,7 +33,7 @@ foreach(target IN LISTS deka_targets)
     target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /EHsc)
     target_link_options(${target} PRIVATE /MANIFEST:EMBED /DYNAMICBASE /NXCOMPAT)
     target_link_libraries(${target} PRIVATE
-        user32 gdi32 comctl32 ole32 oleaut32 shell32 uuid gdiplus windowscodecs comdlg32
+        user32 gdi32 comctl32 ole32 oleaut32 shell32 uuid gdiplus windowscodecs comdlg32 uxtheme
     )
     set_target_properties(${target} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

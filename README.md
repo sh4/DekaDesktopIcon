@@ -4,6 +4,8 @@ Explorer のデスクトップに 64～1024 px のアイコンを描画する Wi
 
 デスクトップ上の項目、選択、ドラッグ、並べ替え、自動整列を使用できます。コンテキストメニューは既存の Explorer ビューに表示を委譲するため、Windows 11 の新形式／従来形式の設定に従います。
 
+ドラッグ中にフォルダーやごみ箱などへ重ねると、表示領域全体でドロップ先を判定し、対象の強調表示と移動／コピーなどの操作ヒントを表示します。操作内容とドロップの可否は Explorer が決定します。
+
 ## ビルド
 
 Windows x64、Visual Studio の「C++ によるデスクトップ開発」と Windows SDK が必要です。PowerShell から実行します。
@@ -78,6 +80,7 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 .\validate-safety.ps1
 .\validate-sort.ps1
 .\validate-interaction.ps1
+.\validate-interaction.ps1 -DropFeedbackOnly
 .\validate-shell-behavior.ps1
 ```
 
@@ -87,6 +90,7 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 .\validate-explorer.ps1
 .\validate-explorer-sort.ps1
 .\validate-interaction.ps1 -Explorer
+.\validate-interaction.ps1 -Explorer -DropFeedbackOnly
 .\validate-shell-behavior.ps1 -Explorer
 ```
 

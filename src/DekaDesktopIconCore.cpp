@@ -5,6 +5,8 @@
 #include <mutex>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <uxtheme.h>
+#include <vsstyle.h>
 
 using namespace deka;
 
@@ -46,6 +48,8 @@ struct State {
     bool moving = false;
     bool marquee = false;
     bool externalDrag = false;
+    bool nativeDragPending = false;
+    UINT_PTR gesture = 0;
     bool committing = false;
     bool rightButton = false;
     bool positionCommitSucceeded = true;
@@ -63,6 +67,9 @@ struct State {
     UINT64 moveCommits = 0;
     UINT64 nativeDrags = 0;
     POINT lastMoveDelta{};
+    ComPtr<IDropTarget> dropTarget;
+    ComPtr<IDropTarget> originalDropTarget;
+    bool originalDropRegistered = false;
     // Original shell resources remain shell-owned and are restored on removal.
     int iconSize = 1024;
     LONG_PTR originalStyle = 0;
@@ -85,6 +92,8 @@ struct State {
 
 void CancelInteraction();
 void SnapItems();
+void InstallDropTarget();
+void RemoveDropTarget(bool restoreNative = true);
 
 bool IsAutoArrangeEnabled() {
     return (GetWindowLongPtrW(state.listView, GWL_STYLE) & LVS_AUTOARRANGE) != 0;
@@ -338,6 +347,7 @@ void Restore() {
         Status();
         return;
     }
+    RemoveDropTarget();
     CancelInteraction();
     state.pendingMoves.clear();
     if (state.contextActive) {
@@ -517,6 +527,7 @@ void Apply(HWND list, const SharedCommand& request) {
     state.deadline =
         request.leaseSeconds ? GetTickCount64() + UINT64(request.leaseSeconds) * 1000 : 0;
     try {
+        InstallDropTarget();
         SendMessageW(list, WM_SETREDRAW, FALSE, 0);
         SetWindowLongPtrW(list, GWL_STYLE,
                           (state.originalStyle | LVS_SHAREIMAGELISTS) & ~LVS_TYPEMASK);
@@ -582,6 +593,8 @@ int HitTestPaintedItem(POINT point, UINT* flags = nullptr) {
     return -1;
 }
 
+#include "DropTarget.h"
+
 void SnapItems() {
     if (IsAutoArrangeEnabled()) {
         ListView_Arrange(state.listView, LVA_DEFAULT);
@@ -633,6 +646,7 @@ void SnapItems() {
 }
 
 #include "Interaction.h"
+#include "../tests/DragDropChecks.h"
 #include "../tests/RegressionChecks.h"
 
 void DrawItem(NMLVCUSTOMDRAW* draw) {
@@ -658,18 +672,27 @@ void DrawItem(NMLVCUSTOMDRAW* draw) {
     label.right = icon.right;
     label.top = icon.bottom + 4;
     label.bottom = label.top + 48;
+    UINT nativeState = ListView_GetItemState(state.listView, index,
+                                             LVIS_SELECTED | LVIS_FOCUSED | LVIS_DROPHILITED);
+    if ((nativeState & (LVIS_SELECTED | LVIS_DROPHILITED)) ||
+        (draw->nmcd.uItemState & CDIS_DROPHILITED)) {
+        RECT bounds{icon.left - 4, icon.top - 4, icon.right + 4, label.bottom + 4};
+        bool drop = (nativeState & LVIS_DROPHILITED) || (draw->nmcd.uItemState & CDIS_DROPHILITED);
+        int themeState = drop || GetFocus() == state.listView || state.externalDrag
+                             ? LISS_SELECTED
+                             : LISS_SELECTEDNOTFOCUS;
+        HTHEME theme = OpenThemeData(state.listView, L"ListView");
+        if (!theme || FAILED(DrawThemeBackground(theme, draw->nmcd.hdc, LVP_LISTITEM, themeState,
+                                                 &bounds, nullptr))) {
+            FillRect(draw->nmcd.hdc, &bounds, GetSysColorBrush(COLOR_HIGHLIGHT));
+        }
+        if (theme) {
+            CloseThemeData(theme);
+        }
+    }
     Gdiplus::Graphics graphics(draw->nmcd.hdc);
     graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-    UINT nativeState = ListView_GetItemState(state.listView, index, LVIS_SELECTED | LVIS_FOCUSED);
-    if (nativeState & LVIS_SELECTED) {
-        Gdiplus::SolidBrush highlight(Gdiplus::Color(65, 70, 150, 225));
-        graphics.FillRectangle(&highlight, icon.left - 4, icon.top - 4, state.iconSize + 8,
-                               state.iconSize + 60);
-        Gdiplus::Pen border(Gdiplus::Color(165, 190, 222, 255), 1);
-        graphics.DrawRectangle(&border, icon.left - 4, icon.top - 4, state.iconSize + 7,
-                               state.iconSize + 59);
-    }
     std::shared_ptr<Picture> picture;
     {
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -786,7 +809,8 @@ LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
             return GetPaintedItemRect(static_cast<int>(wParam), kind, *rect);
         }
     }
-    if (state.active && message == LVM_HITTEST && lParam) {
+    if (state.active && !state.baseGeometry &&
+        (message == LVM_HITTEST || message == LVM_SUBITEMHITTEST) && lParam) {
         auto hit = reinterpret_cast<LVHITTESTINFO*>(lParam);
         hit->iItem = HitTestPaintedItem(hit->pt, &hit->flags);
         hit->iSubItem = 0;
@@ -897,6 +921,7 @@ LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
         return 0;
     }
     if (message == WM_NCDESTROY) {
+        RemoveDropTarget(false);
         CancelInteraction();
         state.active = false;
         ++state.generation;
@@ -981,6 +1006,10 @@ void HandleCommand(HWND hwnd) {
             break;
         case Command::ValidateInteraction:
             ValidateInteraction(shared->capture);
+            Status();
+            break;
+        case Command::ValidateDropFeedback:
+            ValidateDropFeedback(shared->capture);
             Status();
             break;
         case Command::ValidateShellBehavior:

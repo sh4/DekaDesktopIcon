@@ -3,11 +3,14 @@
 #include "ImagingChecks.h"
 #include <shellapi.h>
 #include <windowsx.h>
+#include <uxtheme.h>
 using namespace deka;
 
 namespace {
 HWND list = nullptr;
 HIMAGELIST images = nullptr;
+
+#include "DragFeedbackHost.h"
 
 UINT ExerciseMessage() {
     return RegisterWindowMessageW(L"DekaDesktopIcon.TestHost.Exercise.v1");
@@ -18,6 +21,10 @@ int CALLBACK Compare(LPARAM left, LPARAM right, LPARAM direction) {
 }
 
 LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == TestDropTargetMessage && previewTarget) {
+        previewTarget->AddRef();
+        return reinterpret_cast<LRESULT>(previewTarget.Get());
+    }
     if (message == WM_CONTEXTMENU) {
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         if (point.x == -1 && point.y == -1) {
@@ -77,6 +84,7 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
             0, WC_LISTVIEWW, L"DekaDesktopIcon test items",
             WS_CHILD | WS_VISIBLE | LVS_ICON | LVS_EDITLABELS | LVS_SHAREIMAGELISTS, 0, 0, 1600,
             1100, hwnd, reinterpret_cast<HMENU>(1), GetModuleHandleW(nullptr), nullptr);
+        SetWindowTheme(list, L"Explorer", nullptr);
         images = ImageList_Create(64, 64, ILC_COLOR32 | ILC_MASK, 1, 1);
         ImageList_AddIcon(images, LoadIconW(nullptr, IDI_APPLICATION));
         ListView_SetImageList(list, images, LVSIL_NORMAL);
@@ -91,6 +99,9 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
                 const_cast<PWSTR>(i ? L"System32 (native item 101)" : L"Windows (native item 100)");
             ListView_InsertItem(list, &item);
             ListView_SetItemPosition32(list, i, 30 + i * 160, 40);
+        }
+        if (dragPreviewHost) {
+            EnableDragPreview();
         }
         SetTimer(hwnd, 10, 120000, nullptr);
         return 0;
@@ -163,6 +174,11 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         return 0;
     }
     if (message == WM_DESTROY) {
+        if (previewTarget) {
+            RevokeDragDrop(list);
+            previewTarget.Reset();
+            OleUninitialize();
+        }
         if (images) {
             ImageList_Destroy(images);
         }
@@ -220,7 +236,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
         CoUninitialize();
         return ok ? 0 : 1;
     }
-    if (argc == 2) {
+    dragPreviewHost = argc == 2 && !wcscmp(args[1], L"--drag-preview");
+    if (argc == 2 && !dragPreviewHost) {
         WPARAM command = !wcscmp(args[1], L"--exercise-refresh")        ? 1
                          : !wcscmp(args[1], L"--exercise-layout")       ? 2
                          : !wcscmp(args[1], L"--exercise-null-refresh") ? 3
@@ -252,6 +269,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     UpdateWindow(window);
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (message.message == WM_KEYDOWN && message.wParam == VK_F8) {
+            EnableDragPreview();
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }

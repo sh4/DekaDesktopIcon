@@ -9,6 +9,7 @@ constexpr DWORD Version = 3;
 constexpr UINT_PTR ParentSubclassId = 0x44444901;
 constexpr UINT_PTR ListSubclassId = 0x44444902;
 constexpr UINT_PTR TimerId = 0x44444903;
+constexpr UINT TestDropTargetMessage = WM_APP + 0x445;
 constexpr int MaxItems = 512;
 enum class Command : DWORD {
     Apply = 1,
@@ -19,7 +20,8 @@ enum class Command : DWORD {
     CaptureDrag = 6,
     ValidateInteraction = 7,
     ValidateShellBehavior = 8,
-    ShowContext = 9
+    ShowContext = 9,
+    ValidateDropFeedback = 10
 };
 
 struct SharedCommand {

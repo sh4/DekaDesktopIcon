@@ -22,7 +22,7 @@ if ($Configuration -eq 'Debug') {
 }
 $libraries = @(
     'user32.lib', 'gdi32.lib', 'comctl32.lib', 'ole32.lib', 'oleaut32.lib',
-    'shell32.lib', 'uuid.lib', 'gdiplus.lib', 'windowscodecs.lib', 'comdlg32.lib'
+    'shell32.lib', 'uuid.lib', 'gdiplus.lib', 'windowscodecs.lib', 'comdlg32.lib', 'uxtheme.lib'
 )
 $targets = @(
     @{ Name = 'DekaDesktopIconCore'; Dll = $true; Sources = @('src\DekaDesktopIconCore.cpp') },

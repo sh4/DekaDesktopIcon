@@ -174,6 +174,7 @@ void ValidateInteraction(const std::wstring& path) {
         auto before = ReadDesktopItems(state.listView, state.testHost);
         mouse(WM_LBUTTONDOWN, MK_LBUTTON, down);
         mouse(WM_MOUSEMOVE, MK_LBUTTON, up);
+        Require(state.nativeDragPending, "Shell drag was delayed until overlapping a target");
         Require(state.moving && state.dragBitmap &&
                     state.dragBitmap->GetWidth() == static_cast<UINT>(state.iconSize) &&
                     state.dragBitmap->GetHeight() == static_cast<UINT>(state.iconSize + 52),
@@ -251,6 +252,14 @@ void ValidateInteraction(const std::wstring& path) {
         mouse(WM_KEYDOWN, VK_ESCAPE, POINT{});
         Require(!state.pressed && !state.marquee && !state.moving,
                 "Escape did not cancel the gesture");
+        auto previousGesture = state.gesture;
+        auto nativeDrags = state.nativeDrags;
+        mouse(WM_LBUTTONDOWN, MK_LBUTTON, point(0));
+        SendMessageW(state.listView, NativeDragMessage(), previousGesture, 0);
+        Require(state.pressed && !state.moving && state.nativeDrags == nativeDrags,
+                "A queued drag from an old gesture started a new drag");
+        CancelInteraction();
+        ValidateDragFeedback(capturePrefix);
         cleanup();
         auto restored = ReadDesktopItems(state.listView, state.testHost);
         bool exactPositions = restored.size() == original.size();
@@ -269,14 +278,20 @@ void ValidateInteraction(const std::wstring& path) {
         Require(exactPositions || savedAutomatic || savedSnap,
                 "Interaction cleanup changed free-placement positions");
         WriteUtf16(
-            path, L"{\"passed\":true,\"size\":" + std::to_wstring(state.iconSize) +
-                      L",\"lowerIconSelection\":true,\"controlToggle\":true,\"shiftRange\":true,"
-                      L"\"reverseMarquee\":true,\"scrolledMarquee\":true,\"singleMove\":true,"
-                      L"\"groupMove\":true,\"refreshPreservesMove\":true,\"dragPreviewAndHotspot\":"
-                      L"true,\"shellDragImage\":true,\"escapeCancellation\":true,"
-                      L"\"alignmentRestored\":true,\"positionsRestoredExactly\":" +
-                      std::to_wstring(exactPositions) + L",\"nativeAlignmentMayReposition\":" +
-                      std::to_wstring(savedAutomatic || savedSnap) + L"}");
+            path,
+            L"{\"passed\":true,\"size\":" + std::to_wstring(state.iconSize) +
+                L",\"lowerIconSelection\":true,\"controlToggle\":true,\"shiftRange\":true,"
+                L"\"reverseMarquee\":true,\"scrolledMarquee\":true,\"singleMove\":true,"
+                L"\"groupMove\":true,\"refreshPreservesMove\":true,\"dragPreviewAndHotspot\":"
+                L"true,\"shellDragImage\":true,\"escapeCancellation\":true,"
+                L"\"dropHighlight\":true,\"dropHitTests\":true,\"shellDropDescriptions\":true,"
+                L"\"dropDelegation\":true,\"nativeDropFeedback\":" +
+                std::to_wstring(!state.testHost) + L"," +
+                L"\"nativeDragStartsAtThreshold\":true,\"staleDragMessageIgnored\":true,"
+                L"\"shellDragModifiersAndCancellation\":true,"
+                L"\"alignmentRestored\":true,\"positionsRestoredExactly\":" +
+                std::to_wstring(exactPositions) + L",\"nativeAlignmentMayReposition\":" +
+                std::to_wstring(savedAutomatic || savedSnap) + L"}");
     } catch (...) {
         cleanup();
         throw;

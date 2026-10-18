@@ -56,6 +56,7 @@ void FocusItem(int index) {
 
 void CancelInteraction() {
     state.pressed = state.moving = state.marquee = false;
+    state.nativeDragPending = false;
     if (state.listView && GetCapture() == state.listView) {
         ReleaseCapture();
     }
@@ -374,32 +375,190 @@ void FinishMove() {
     QueueSynchronization();
 }
 
+ComPtr<IDataObject> ShellDragData(DWORD& effects) {
+    ComPtr<IShellItemArray> selection;
+    ComPtr<IDataObject> data;
+    if (state.testHost) {
+        std::vector<PIDLIST_ABSOLUTE> pidls;
+        for (const auto& item : state.dragItems) {
+            PIDLIST_ABSOLUTE pidl = nullptr;
+            if (SUCCEEDED(SHParseDisplayName(item.key.c_str(), nullptr, &pidl, 0, nullptr))) {
+                pidls.push_back(pidl);
+            }
+        }
+        HRESULT hr = SHCreateShellItemArrayFromIDLists(static_cast<UINT>(pidls.size()),
+                                                       const_cast<PCIDLIST_ABSOLUTE*>(pidls.data()),
+                                                       &selection);
+        for (auto pidl : pidls) {
+            CoTaskMemFree(pidl);
+        }
+        Require(SUCCEEDED(hr), "Test drag selection unavailable");
+        Require(SUCCEEDED(selection->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&data))),
+                "Test drag data unavailable");
+    } else {
+        auto folder = GetDesktopFolderView();
+        Require(folder != nullptr, "Desktop drag view unavailable");
+        ComPtr<IShellView> view;
+        Require(SUCCEEDED(folder.As(&view)) &&
+                    SUCCEEDED(view->GetItemObject(SVGIO_SELECTION, IID_PPV_ARGS(&data))) &&
+                    SUCCEEDED(folder->GetSelection(FALSE, &selection)),
+                "Desktop drag selection unavailable");
+    }
+    SFGAOF attributes = 0;
+    Require(SUCCEEDED(selection->GetAttributes(
+                SIATTRIBFLAGS_AND, SFGAO_CANCOPY | SFGAO_CANMOVE | SFGAO_CANLINK, &attributes)),
+            "Drag capabilities unavailable");
+    effects = (attributes & SFGAO_CANCOPY ? DROPEFFECT_COPY : 0) |
+              (attributes & SFGAO_CANMOVE ? DROPEFFECT_MOVE : 0) |
+              (attributes & SFGAO_CANLINK ? DROPEFFECT_LINK : 0);
+    // Even virtual desktop icons can be repositioned within this view.
+    effects |= DROPEFFECT_MOVE;
+    return data;
+}
+
+ComPtr<IDragSourceHelper2> InitializeShellDragImage(IDataObject* data) {
+    ComPtr<IDragSourceHelper2> helper;
+    Require(SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(&helper))),
+            "Shell drag image helper unavailable");
+    // Supplying a custom bitmap otherwise disables Explorer's operation text.
+    Require(SUCCEEDED(helper->SetFlags(DSH_ALLOWDROPDESCRIPTIONTEXT)),
+            "Shell drop descriptions unavailable");
+    auto anchor = ToClient(state.downView);
+    Require(SUCCEEDED(helper->InitializeFromWindow(state.listView, &anchor, data)),
+            "Shell drag image initialization failed");
+    // InitializeFromWindow/Bitmap can clear this flag for custom bitmaps, even
+    // with DSH_ALLOWDROPDESCRIPTIONTEXT. Windows Forms enables it for the same reason.
+    FORMATETC format{static_cast<CLIPFORMAT>(RegisterClipboardFormatW(L"IsShowingText")), nullptr,
+                     DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    STGMEDIUM medium{};
+    medium.tymed = TYMED_HGLOBAL;
+    medium.hGlobal = GlobalAlloc(GMEM_MOVEABLE, sizeof(BOOL));
+    auto value = static_cast<BOOL*>(GlobalLock(medium.hGlobal));
+    if (!value) {
+        ReleaseStgMedium(&medium);
+        throw std::runtime_error("Shell drop text flag allocation failed");
+    }
+    *value = TRUE;
+    GlobalUnlock(medium.hGlobal);
+    HRESULT hr = data->SetData(&format, &medium, TRUE);
+    if (FAILED(hr)) {
+        ReleaseStgMedium(&medium);
+        throw std::runtime_error("Shell drop text could not be enabled");
+    }
+    return helper;
+}
+
+bool IsInternalMoveTarget(POINT screen, DWORD keys) {
+    if (state.rightButton || (keys & MK_CONTROL) || GetKeyState(VK_MENU) < 0 ||
+        WindowFromPoint(screen) != state.listView) {
+        return false;
+    }
+    ScreenToClient(state.listView, &screen);
+    int target = HitTestPaintedItem(screen);
+    return target < 0 || IsDragSourceItem(target);
+}
+
+class DesktopDropSource final : public IDropSource {
+    ULONG references = 1;
+    ComPtr<IDataObject> data;
+    bool ownWindowOnly = false;
+
+  public:
+    bool internalMove = false;
+
+    explicit DesktopDropSource(IDataObject* object = nullptr, bool hostOnly = false)
+        : data(object), ownWindowOnly(hostOnly) {
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (!object) {
+            return E_POINTER;
+        }
+        *object = nullptr;
+        if (iid != IID_IUnknown && iid != IID_IDropSource) {
+            return E_NOINTERFACE;
+        }
+        *object = static_cast<IDropSource*>(this);
+        AddRef();
+        return S_OK;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return ++references;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG remaining = --references;
+        if (!remaining) {
+            delete this;
+        }
+        return remaining;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD keys) override {
+        if (escape || !state.active) {
+            return DRAGDROP_S_CANCEL;
+        }
+        if (ownWindowOnly) {
+            POINT pointer{};
+            if (!GetCursorPos(&pointer) || WindowFromPoint(pointer) != state.listView) {
+                // Test items represent Windows directories; never offer them to
+                // another application during the UI-only feedback preview.
+                return DRAGDROP_S_CANCEL;
+            }
+        }
+        if (keys & (state.rightButton ? MK_LBUTTON : MK_RBUTTON)) {
+            return DRAGDROP_S_CANCEL;
+        }
+        if (keys & (state.rightButton ? MK_RBUTTON : MK_LBUTTON)) {
+            return S_OK;
+        }
+        POINT screen{};
+        if (GetCursorPos(&screen) && IsInternalMoveTarget(screen, keys)) {
+            ScreenToClient(state.listView, &screen);
+            state.currentView = ToView(screen);
+            internalMove = true;
+            // Keep the existing exact-offset/grid-aware positioning after leaving
+            // a folder target and returning to empty space in this desktop.
+            return DRAGDROP_S_CANCEL;
+        }
+        return DRAGDROP_S_DROP;
+    }
+
+    HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override {
+        UpdateDropImage(data.Get());
+        return DRAGDROP_S_USEDEFAULTCURSORS;
+    }
+};
+
 void NativeDrag() {
     if (!state.pressed || !state.active) {
         return;
     }
-    int index = state.pressedItem;
-    POINT anchor = ToClient(state.downView);
-    bool right = state.rightButton;
     if (!state.dragBitmap) {
         BuildDragBitmap();
     }
+    DWORD effects = 0;
+    auto data = ShellDragData(effects);
+    auto helper = InitializeShellDragImage(data.Get());
+    ComPtr<DesktopDropSource> source;
+    source.Attach(new DesktopDropSource(data.Get(), state.testHost));
     state.externalDrag = true;
     CancelInteraction();
     state.nativeDrags++;
-    NMLISTVIEW notification{};
-    notification.hdr.hwndFrom = state.listView;
-    notification.hdr.idFrom = GetDlgCtrlID(state.listView);
-    notification.hdr.code = right ? LVN_BEGINRDRAG : LVN_BEGINDRAG;
-    notification.iItem = index;
-    notification.ptAction = anchor;
-    SendMessageW(state.shellViewWindow, WM_NOTIFY, notification.hdr.idFrom,
-                 reinterpret_cast<LPARAM>(&notification));
+    DWORD performed = DROPEFFECT_NONE;
+    HRESULT hr = SHDoDragDrop(state.listView, data.Get(), source.Get(), effects, &performed);
+    if (source->internalMove && state.active) {
+        FinishMove();
+    }
     state.externalDrag = false;
     state.dragBitmap.reset();
     state.dragItems.clear();
+    ListView_SetItemState(state.listView, -1, 0, LVIS_DROPHILITED);
     QueueSynchronization();
     InvalidateRect(state.listView, nullptr, FALSE);
+    Require(SUCCEEDED(hr), "Shell drag failed");
 }
 
 void CaptureDrag(const std::wstring& path) {
@@ -489,6 +648,10 @@ bool HandleInteraction(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, LR
         return true;
     }
     if (message == NativeDragMessage()) {
+        if (!state.nativeDragPending || wParam != state.gesture) {
+            return true;
+        }
+        state.nativeDragPending = false;
         try {
             NativeDrag();
         } catch (...) {
@@ -581,6 +744,7 @@ bool HandleInteraction(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, LR
     }
     if (message == WM_LBUTTONDOWN || message == WM_RBUTTONDOWN || message == WM_RBUTTONDBLCLK) {
         CancelInteraction();
+        ++state.gesture;
         SetFocus(hwnd);
         state.rightButton = message != WM_LBUTTONDOWN;
         POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
@@ -620,13 +784,9 @@ bool HandleInteraction(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, LR
             UpdateMarquee();
         }
         if (state.moving) {
-            RECT client{};
-            GetClientRect(hwnd, &client);
-            int target = HitTestPaintedItem(point);
-            if (IsAutoArrangeEnabled() || state.rightButton || (wParam & MK_CONTROL) ||
-                GetKeyState(VK_MENU) < 0 || !PtInRect(&client, point) ||
-                (target >= 0 && !IsItemSelected(target))) {
-                PostMessageW(hwnd, NativeDragMessage(), 0, 0);
+            if (!state.nativeDragPending) {
+                state.nativeDragPending =
+                    PostMessageW(hwnd, NativeDragMessage(), state.gesture, 0) != FALSE;
             }
             InvalidateRect(hwnd, nullptr, FALSE);
         }
