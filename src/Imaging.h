@@ -74,9 +74,11 @@ inline std::shared_ptr<Picture> LoadPicture(const Item& item) {
     Require(SUCCEEDED(SHCreateItemFromParsingName(item.key.c_str(), nullptr, IID_PPV_ARGS(&shell))),
             "Shell image factory unavailable");
     HBITMAP bitmap = nullptr;
-    Require(
-        SUCCEEDED(shell->GetImage(SIZE{256, 256}, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &bitmap)),
-        "Shell image unavailable");
+    // Let the Shell prefer thumbnails and fall back to icons for other items.
+    // Request our maximum drawing size; smaller results are scaled by the renderer.
+    Require(SUCCEEDED(shell->GetImage(SIZE{1024, 1024}, SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK,
+                                      &bitmap)),
+            "Shell image unavailable");
     ComPtr<IWICBitmap> wic;
     HRESULT hr =
         factory->CreateBitmapFromHBITMAP(bitmap, nullptr, WICBitmapUsePremultipliedAlpha, &wic);

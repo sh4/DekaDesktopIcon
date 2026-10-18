@@ -1,15 +1,20 @@
 ﻿# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sh4
-param([Parameter(Mandatory)][string]$OutputPath)
+param(
+    [Parameter(Mandatory)][string]$OutputPath,
+    [ValidateRange(1, 16384)][int]$Width = 1024,
+    [ValidateRange(1, 16384)][int]$Height = 1024
+)
 
 $ErrorActionPreference = 'Stop'
 $OutputPath = [IO.Path]::GetFullPath($OutputPath)
 New-Item -ItemType Directory -Path (Split-Path $OutputPath -Parent) -Force | Out-Null
 Add-Type -AssemblyName System.Drawing
 
-# A deterministic, transparent 1024px fixture; no binary assets are tracked.
-$bitmap = [Drawing.Bitmap]::new(1024, 1024, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
+# A deterministic, transparent fixture; no binary assets are tracked.
+$bitmap = [Drawing.Bitmap]::new($Width, $Height, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
 $graphics = [Drawing.Graphics]::FromImage($bitmap)
+$graphics.ScaleTransform([single]($Width / 1024), [single]($Height / 1024))
 $folder = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 57, 203, 157))
 $outline = [Drawing.Pen]::new([Drawing.Color]::FromArgb(255, 12, 104, 91), 14)
 $white = [Drawing.SolidBrush]::new([Drawing.Color]::White)

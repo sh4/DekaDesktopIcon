@@ -15,6 +15,8 @@ concurrency:
 jobs:
   release:
     name: Windows x64 Release
+    permissions:
+      contents: write
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
@@ -69,6 +71,9 @@ jobs:
       - name: Test release authorization
         run: ./tests/Test-ReleaseAuthorization.ps1
 
+      - name: Test release publishing
+        run: ./tests/Test-ReleasePublishing.ps1
+
       - name: Build release binaries
         run: ./build.ps1 -Configuration Release -OutputDirectory ./build/release-bin
 
@@ -87,3 +92,13 @@ jobs:
           retention-days: 14
           compression-level: 0
           include-hidden-files: false
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+        run: >-
+          ./scripts/Publish-GitHubRelease.ps1
+          -Version $env:RELEASE_VERSION
+          -Commit $env:GITHUB_SHA
+          -Repository $env:GITHUB_REPOSITORY

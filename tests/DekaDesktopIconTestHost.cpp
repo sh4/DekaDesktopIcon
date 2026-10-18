@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sh4
-#include "ShellDesktop.h"
+#include "ImagingChecks.h"
 #include <shellapi.h>
 #include <windowsx.h>
 using namespace deka;
@@ -174,10 +174,38 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
-    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     int argc = 0;
     auto args = CommandLineToArgvW(GetCommandLineW(), &argc);
+    bool imaging = argc == 5 && !wcscmp(args[1], L"--check-imaging");
+    HRESULT com =
+        CoInitializeEx(nullptr, imaging ? COINIT_MULTITHREADED : COINIT_APARTMENTTHREADED);
+    if (imaging) {
+        ULONG_PTR gdiplus = 0;
+        Gdiplus::GdiplusStartupInput startup;
+        int result = 1;
+        try {
+            Require(SUCCEEDED(com), "Test COM initialization failed");
+            Require(Gdiplus::GdiplusStartup(&gdiplus, &startup, nullptr) == Gdiplus::Ok,
+                    "Test GDI+ initialization failed");
+            CheckImaging(args[2], args[3]);
+            WriteUtf16(args[4], L"{\"passed\":true,\"thumbnail\":true,\"iconFallback\":true,"
+                                L"\"override\":true,\"aspectRatio\":true,\"highResolution\":true}");
+            result = 0;
+        } catch (const std::exception& ex) {
+            const char* message = ex.what();
+            WriteUtf16(args[4], L"{\"passed\":false,\"message\":\"" +
+                                    std::wstring(message, message + strlen(message)) + L"\"}");
+        }
+        if (gdiplus) {
+            Gdiplus::GdiplusShutdown(gdiplus);
+        }
+        if (SUCCEEDED(com)) {
+            CoUninitialize();
+        }
+        LocalFree(args);
+        return result;
+    }
     if (argc == 3 && !wcscmp(args[1], L"--snapshot")) {
         auto desktop = FindDesktop(true);
         DWORD_PTR result = 0;

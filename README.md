@@ -31,7 +31,7 @@ cmake --build build/cmake --config Release
 
 CMake の実行ファイルと DLL は `build/cmake/bin` に生成します。バイナリ・中間生成物・検証画像・検証結果は Git の管理対象から除外しています。検証用 PNG はスクリプトが生成します。
 
-GitHub Actions では **Build release binaries** を管理者が手動実行し、Windows x64 の配布用 ZIP と SHA-256 を取得できます。実行方法と GitHub 側の保護設定は [リリース手順](docs/RELEASING.md) を参照してください。
+GitHub Actions では **Build release binaries** を管理者が手動実行すると、Windows x64 の配布用 ZIP と SHA-256 をビルドし、バージョンタグに対応する GitHub Release へ自動登録します。実行方法と GitHub 側の保護設定は [リリース手順](docs/RELEASING.md) を参照してください。
 
 ## 使い方
 
@@ -42,7 +42,9 @@ GitHub Actions では **Build release binaries** を管理者が手動実行し�
 
 設定画面を閉じてもパッチは Explorer 内で動作します。Explorer を再起動した場合は再適用が必要です。システムファイル、レジストリ、自動起動設定は変更しません。
 
-PNG / JPEG / BMP / ICO 等、Windows Imaging Component が読める画像に対応します。鮮明な 1024 px 表示には 1024 px 以上の画像を使ってください。標準アイコンの拡大では原画以上の細部は得られません。登録した画像ファイルは元の場所に保持してください。
+画像を割り当てていない項目は、Explorer の Shell が提供するサムネイルを優先して拡大表示します。サムネイルがない項目は標準アイコンを拡大します。縦横比を保って表示し、手動で割り当てた画像がある場合はそちらを優先します。
+
+PNG / JPEG / BMP / ICO 等、Windows Imaging Component が読める画像に対応します。鮮明な 1024 px 表示には 1024 px 以上の画像を使ってください。サムネイルや標準アイコンの拡大では原画以上の細部は得られません。登録した画像ファイルは元の場所に保持してください。
 
 背景の「表示」メニューから自動整列・等間隔整列を切り替えられます。適用中に変更した整列設定は解除後も維持します。整列が有効な場合、復元した位置が Windows により調整されることがあります。
 
@@ -72,6 +74,7 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 .\scripts\Format-Source.ps1
 .\scripts\Test-SourceStyle.ps1
 .\validate.ps1
+.\validate-imaging.ps1
 .\validate-safety.ps1
 .\validate-sort.ps1
 .\validate-interaction.ps1

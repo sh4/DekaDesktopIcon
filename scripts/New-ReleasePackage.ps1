@@ -17,6 +17,13 @@ if (-not $versionMatch.Success) {
     throw 'The release version could not be read from CMakeLists.txt.'
 }
 $version = $versionMatch.Groups['version'].Value
+$changelog = Get-Content -LiteralPath (Join-Path $repo 'CHANGELOG.md') -Raw -Encoding utf8
+$notesMatch = [regex]::Match(
+    $changelog, '(?ms)^# ' + [regex]::Escape($version) + ' — [^\r\n]+\r?\n(?<notes>.*?)(?=^# |\z)'
+)
+if (-not $notesMatch.Success -or [string]::IsNullOrWhiteSpace($notesMatch.Groups['notes'].Value)) {
+    throw "Release notes for version $version were not found in CHANGELOG.md."
+}
 $commit = & git -C $repo rev-parse --verify HEAD
 if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$') {
     throw 'The source commit could not be determined.'
@@ -52,9 +59,12 @@ try {
     $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $packageName.zip" |
         Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding ascii
+    $notesMatch.Groups['notes'].Value.Trim() |
+        Set-Content -LiteralPath (Join-Path $OutputDirectory 'RELEASE-NOTES.md') -Encoding utf8
 
     if ($env:GITHUB_OUTPUT) {
         "package-name=$packageName" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "version=$version" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Append -Encoding utf8
     }
     Write-Output "Release package: $archivePath"
     Write-Output "SHA256: $hash"
