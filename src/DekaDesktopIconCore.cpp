@@ -39,6 +39,10 @@ struct State {
     UINT64 contextMenus = 0;
     HWND contextPopup = nullptr;
     UINT64 contextTick = 0;
+    UINT64 menuSeenTick = 0;
+    UINT contextKeyTips = 0;
+    std::wstring menuCapturePath;
+    bool menuCaptureFailed = false;
     bool menuDismissed = false;
     bool contextItem = false;
     std::wstring menuStyle;

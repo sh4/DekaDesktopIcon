@@ -58,11 +58,15 @@ Shell のドラッグループは重なった後ではなく、ドラッグ閾�
 
 ## コンテキストメニュー
 
-既存の `IShellView::GetItemObject` から項目／背景のメニューを取得し、既存ビューが提供する `IContextMenuSite::DoContextMenuPopup` に表示と実行を委譲します。Explorer が新形式・従来形式・Shift の拡張メニュー・「その他のオプションを確認」を選びます。形式の選択をレジストリで変更しません。
+マウスによる要求は、実際の画面座標を付けた `WM_CONTEXTMENU` を既存の Shell ビューへ送り、Explorer のマウス用メニュー表示経路に委譲します。`IContextMenuSite::DoContextMenuPopup` を直接呼ぶとこの経路を通らず、Alt を押していなくても WinUI のキー案内が表示されることがあるためです。Explorer が新形式・従来形式・Shift の拡張メニュー・「その他のオプションを確認」を選びます。形式の選択をレジストリで変更しません。
 
-`IContextMenuSite` は非推奨のインターフェイスですが、対象 Explorer が公開するものを利用しています。別途作ったメニューで Windows 11 の表示を模倣しません。テストホストだけは従来型メニューで検証します。
+キーボードから開く場合は、拡大された選択項目の表示位置を求め、既存の `IShellView::GetItemObject` と `IContextMenuSite::DoContextMenuPopup` に委譲します。`IContextMenuSite` は非推奨ですが、対象 Explorer が公開するものを利用しています。別途作ったメニューで Windows 11 の表示を模倣しません。テストホストだけは従来型メニューで検証します。
 
 右クリック時はキャプチャを解放してから要求をポストします。新形式メニューは非同期に表示されるため、表示関数の戻りだけで成功とは判定しません。開発用検証では対象 UI スレッドのポップアップ、従来形式では `WM_ENTERMENULOOP` を観測し、テスト専用タイマーから Esc で閉じます。
+
+従来形式のアクセスキーの下線は、メニューを開く直前に Shell ビューへ `WM_UPDATEUISTATE` を送り、`UISF_HIDEACCEL` を更新します。キーボードから開いた場合・Alt を押している場合・Windows のアクセスキー常時表示設定を尊重します。このフラグだけでは WinUI の独立したキー案内ポップアップを制御できないため、マウスの表示経路も分けています。仕様は [WM_CONTEXTMENU](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-contextmenu)、[WM_UPDATEUISTATE](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-updateuistate)、[SPI_GETKEYBOARDCUES](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow) を参照してください。
+
+Explorer 向けの回帰試験は実際のマウス入力を `SendInput` で送り、背景・項目のメニューが表示されてから 600 ms 観測します。WinUI のキー案内用ポップアップを数えて非表示を確認し、メニュー全体の実表示を PNG に保存します。タスクバーや別ウィンドウを誤ってクリックしないよう、入力位置が対象 ListView 上にあることも確認します。Win32 の表示フラグだけを検査しても、この回帰は検出できません。
 
 ## 復元と所有権
 

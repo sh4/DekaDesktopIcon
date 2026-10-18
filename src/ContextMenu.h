@@ -9,9 +9,10 @@ void PollContextMenu() {
     if (!state.active || !state.contextTick || GetTickCount64() - state.contextTick > 5000) {
         return;
     }
+    UINT keyTips = 0;
     EnumThreadWindows(
         GetCurrentThreadId(),
-        [](HWND hwnd, LPARAM) -> BOOL {
+        [](HWND hwnd, LPARAM param) -> BOOL {
             if (!IsWindowVisible(hwnd)) {
                 return TRUE;
             }
@@ -21,23 +22,76 @@ void PollContextMenu() {
             }
             RECT rect{};
             GetWindowRect(hwnd, &rect);
+            int dpi = static_cast<int>(std::max(96U, GetDpiForWindow(hwnd)));
+            int width = MulDiv(rect.right - rect.left, 96, dpi);
+            int height = MulDiv(rect.bottom - rect.top, 96, dpi);
+            // WinUI keytip badges use separate, small popup windows, not UISF_HIDEACCEL.
+            if (cls == L"Microsoft.UI.Content.PopupWindowSiteBridge" && width > 0 && width < 100 &&
+                height > 0 && height < 80) {
+                ++*reinterpret_cast<UINT*>(param);
+            }
             if (rect.right - rect.left > 100 && rect.bottom - rect.top > 50) {
                 state.contextPopup = hwnd;
                 state.menuStyle = cls == L"#32768" ? L"classic" : L"modern";
                 if (!state.menuSeen) {
                     state.menuSeen = true;
+                    state.menuSeenTick = GetTickCount64();
                     state.contextMenus++;
                 }
             }
             return TRUE;
         },
-        0);
+        reinterpret_cast<LPARAM>(&keyTips));
+    state.contextKeyTips = std::max(state.contextKeyTips, keyTips);
+}
+
+void CaptureTestContextMenu(const std::wstring& path) {
+    RECT bounds{};
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND window, LPARAM param) -> BOOL {
+            auto cls = GetWindowClassName(window);
+            if (IsWindowVisible(window) &&
+                (cls == L"Microsoft.UI.Content.PopupWindowSiteBridge" || cls == L"#32768")) {
+                RECT rect{};
+                GetWindowRect(window, &rect);
+                auto bounds = reinterpret_cast<RECT*>(param);
+                UnionRect(bounds, bounds, &rect);
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&bounds));
+    Require(!IsRectEmpty(&bounds), "Context menu capture is empty");
+    Gdiplus::Bitmap bitmap(bounds.right - bounds.left, bounds.bottom - bounds.top,
+                           PixelFormat32bppARGB);
+    Gdiplus::Graphics graphics(&bitmap);
+    HDC target = graphics.GetHDC();
+    HDC screen = GetDC(nullptr);
+    BOOL captured = BitBlt(target, 0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                           screen, bounds.left, bounds.top, SRCCOPY | CAPTUREBLT);
+    ReleaseDC(nullptr, screen);
+    graphics.ReleaseHDC(target);
+    Require(captured != FALSE, "Context menu screen capture failed");
+    auto png = PngEncoder();
+    Require(bitmap.Save(path.c_str(), &png, nullptr) == Gdiplus::Ok, "Context menu capture failed");
 }
 
 void DismissTestMenu() {
     PollContextMenu();
     if (!state.menuSeen || state.menuDismissed) {
         return;
+    }
+    if (state.menuStyle == L"modern" && !state.menuCapturePath.empty() &&
+        GetTickCount64() - state.menuSeenTick < 600) {
+        return;
+    }
+    if (!state.menuCapturePath.empty()) {
+        try {
+            CaptureTestContextMenu(state.menuCapturePath);
+        } catch (...) {
+            state.menuCaptureFailed = true;
+        }
+        state.menuCapturePath.clear();
     }
     state.menuDismissed = true;
     EndMenu();
@@ -62,6 +116,7 @@ void ObserveContextMenu(UINT message, WPARAM w, LPARAM) {
     }
     if ((message == WM_ENTERMENULOOP || message == WM_INITMENUPOPUP) && !state.menuSeen) {
         state.menuSeen = true;
+        state.menuSeenTick = GetTickCount64();
         state.contextMenus++;
         state.menuStyle = L"classic";
     }
@@ -125,6 +180,15 @@ void ShellContextMenu(POINT point) {
         index = HitTestPaintedItem(client);
     }
     bool itemMenu = index >= 0 && ListView_GetSelectedCount(state.listView) > 0;
+    state.contextItem = itemMenu;
+    state.contextPoint = point;
+    if (!keyboard) {
+        // Explorer records the mouse invocation through its WM_CONTEXTMENU handler.
+        // Calling IContextMenuSite directly skips that path and can show WinUI keytips.
+        SendMessageW(state.shellViewWindow, WM_CONTEXTMENU,
+                     reinterpret_cast<WPARAM>(state.listView), MAKELPARAM(point.x, point.y));
+        return;
+    }
     auto folder = GetDesktopFolderView();
     Require(folder != nullptr, "Context menu view unavailable");
     ComPtr<IShellView> view;
@@ -133,19 +197,12 @@ void ShellContextMenu(POINT point) {
     Require(SUCCEEDED(view->GetItemObject(itemMenu ? SVGIO_SELECTION : SVGIO_BACKGROUND,
                                           IID_PPV_ARGS(&context))),
             "Native context menu unavailable");
-    // Let the existing shell view select and present its normal menu. Its presenter
-    // handles the Win11 menu, classic preference, Shift, and Show more options.
-    // Never manufacture a legacy popup when the native site is unavailable.
     ComPtr<IContextMenuSite> site;
     Require(SUCCEEDED(view.As(&site)), "Explorer's native context menu site is unavailable");
     UINT flags = itemMenu ? CMF_CANRENAME | CMF_ITEMMENU : CMF_NORMAL;
     if (GetKeyState(VK_SHIFT) < 0) {
         flags |= CMF_EXTENDEDVERBS;
     }
-    state.contextItem = itemMenu;
-    state.contextPoint = point;
-    SetForegroundWindow(GetAncestor(state.listView, GA_ROOT));
-    SetFocus(state.listView);
     Require(SUCCEEDED(site->DoContextMenuPopup(context.Get(), flags, point)),
             "Explorer context menu failed");
 }
@@ -157,6 +214,9 @@ void ProcessContext() {
     state.contextPending = false;
     state.contextActive = true;
     state.menuSeen = false;
+    state.menuSeenTick = 0;
+    state.contextKeyTips = 0;
+    state.menuCaptureFailed = false;
     state.menuTitles.clear();
     state.contextTick = GetTickCount64();
     state.contextPopup = nullptr;
@@ -164,6 +224,17 @@ void ProcessContext() {
     state.menuDismissed = false;
     POINT point = state.contextPoint;
     CancelInteraction();
+    SetForegroundWindow(GetAncestor(state.listView, GA_ROOT));
+    SetFocus(state.listView);
+    // Our mouse handler bypasses the native ListView path that resets keyboard cues.
+    // Update the view subtree directly: the desktop root may suppress a change request
+    // when its own state already matches, leaving stale flags in the menu owner.
+    // Do this before asynchronous Win11 menus are created, preserving keyboard settings.
+    BOOL alwaysShowCues = FALSE;
+    SystemParametersInfoW(SPI_GETKEYBOARDCUES, 0, &alwaysShowCues, 0);
+    bool showCues = (point.x == -1 && point.y == -1) || GetKeyState(VK_MENU) < 0 || alwaysShowCues;
+    SendMessageW(state.shellViewWindow, WM_UPDATEUISTATE,
+                 MAKEWPARAM(showCues ? UIS_CLEAR : UIS_SET, UISF_HIDEACCEL), 0);
     if (state.menuTest) {
         SetTimer(state.listView, MenuTestTimer, 30, nullptr);
     }

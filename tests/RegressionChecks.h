@@ -304,14 +304,36 @@ void ValidateShellBehavior(const std::wstring& path) {
             "Shell behavior validation requires an idle patch and two items");
     auto original = ReadDesktopItems(state.listView, state.testHost);
     bool automatic = IsAutoArrangeEnabled(), snap = IsSnapToGridEnabled();
+    auto savedUiState = SendMessageW(state.listView, WM_QUERYUISTATE, 0, 0);
+    auto savedViewUiState = SendMessageW(state.shellViewWindow, WM_QUERYUISTATE, 0, 0);
+    POINT savedCursor{};
+    GetCursorPos(&savedCursor);
+    BOOL alwaysShowCues = FALSE;
+    Require(SystemParametersInfoW(SPI_GETKEYBOARDCUES, 0, &alwaysShowCues, 0) != FALSE,
+            "Keyboard cue preference unavailable");
     BYTE savedKeys[256]{};
     Require(GetKeyboardState(savedKeys) != FALSE, "Keyboard state unavailable");
-    auto testKeys = [&](bool shift) {
+    auto testKeys = [&](bool shift, bool alt = false) {
         BYTE keys[256]{};
         std::copy(std::begin(savedKeys), std::end(savedKeys), std::begin(keys));
         keys[VK_SHIFT] = keys[VK_LSHIFT] = shift ? 0x80 : 0;
         keys[VK_RSHIFT] = 0;
+        keys[VK_MENU] = keys[VK_LMENU] = alt ? 0x80 : 0;
+        keys[VK_RMENU] = 0;
         Require(SetKeyboardState(keys) != FALSE, "Test keyboard state unavailable");
+    };
+    auto setMenuCues = [&](bool show) {
+        SendMessageW(state.shellViewWindow, WM_UPDATEUISTATE,
+                     MAKEWPARAM(show ? UIS_CLEAR : UIS_SET, UISF_HIDEACCEL), 0);
+    };
+    auto checkMenuCues = [&](bool show) {
+        for (HWND window : {state.listView, state.shellViewWindow}) {
+            bool hidden = (SendMessageW(window, WM_QUERYUISTATE, 0, 0) & UISF_HIDEACCEL) != 0;
+            auto message = std::string(show ? "Visible" : "Hidden") +
+                           " context menu keyboard cues expected in " +
+                           (window == state.listView ? "ListView" : "ShellView");
+            Require(hidden != show, message.c_str());
+        }
     };
     std::vector<bool> selection;
     for (int i = 0; i < static_cast<int>(original.size()); ++i) {
@@ -319,6 +341,12 @@ void ValidateShellBehavior(const std::wstring& path) {
     }
     auto cleanup = [&] {
         SetKeyboardState(savedKeys);
+        SetCursorPos(savedCursor.x, savedCursor.y);
+        state.menuCapturePath.clear();
+        setMenuCues((savedViewUiState & UISF_HIDEACCEL) == 0);
+        SendMessageW(
+            state.listView, WM_UPDATEUISTATE,
+            MAKEWPARAM(savedUiState & UISF_HIDEACCEL ? UIS_SET : UIS_CLEAR, UISF_HIDEACCEL), 0);
         state.menuTest = false;
         state.contextPending = false;
         KillTimer(state.listView, MenuTestTimer);
@@ -348,7 +376,7 @@ void ValidateShellBehavior(const std::wstring& path) {
         }
         return json + L"]";
     };
-    auto waitMenu = [&] {
+    auto waitMenu = [&](UINT64 expectedMenus = 0) {
         auto deadline = GetTickCount64() + 2000;
         while (GetTickCount64() < deadline) {
             MSG message{};
@@ -357,7 +385,7 @@ void ValidateShellBehavior(const std::wstring& path) {
                 DispatchMessageW(&message);
             }
             PollContextMenu();
-            if (state.menuSeen) {
+            if (state.menuSeen && state.contextMenus >= expectedMenus) {
                 DismissTestMenu();
                 if (!state.contextPopup || !IsWindowVisible(state.contextPopup)) {
                     break;
@@ -369,10 +397,15 @@ void ValidateShellBehavior(const std::wstring& path) {
     auto rightClick = [&](POINT point, bool doubleClick) {
         auto before = state.contextMenus;
         auto requests = state.contextRequests;
+        bool showCues = alwaysShowCues || GetKeyState(VK_MENU) < 0;
+        // Reproduce a stale state left by the previous keyboard or mouse interaction.
+        setMenuCues(!showCues);
+        checkMenuCues(!showCues);
         SendMessageW(state.listView, doubleClick ? WM_RBUTTONDBLCLK : WM_RBUTTONDOWN, MK_RBUTTON,
                      MAKELPARAM(point.x, point.y));
         SendMessageW(state.listView, WM_RBUTTONUP, 0, MAKELPARAM(point.x, point.y));
         SendMessageW(state.listView, ContextMessage(), 0, 0);
+        checkMenuCues(showCues);
         waitMenu();
         Require(state.contextRequests == requests + 1 && state.contextMenus == before + 1 &&
                     !state.menuStyle.empty(),
@@ -491,6 +524,10 @@ void ValidateShellBehavior(const std::wstring& path) {
                 }
             }
         }
+        // A large icon can leave only a thin margin, skipped by the scan's 16px steps.
+        if (empty.x < 0 && HitTestPaintedItem(POINT{client.left, client.top}) < 0) {
+            empty = POINT{client.left, client.top};
+        }
         Require(empty.x >= 0, "No empty desktop point available for menu validation");
         std::wstring backgroundTitles, itemTitles, keyboardTitles, defaultStyle;
         auto initialMenus = state.contextMenus;
@@ -514,9 +551,11 @@ void ValidateShellBehavior(const std::wstring& path) {
         }
         for (int i = 0; i < 6; ++i) {
             auto before = state.contextMenus;
+            setMenuCues(false);
             SendMessageW(state.listView, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(state.listView),
                          MAKELPARAM(-1, -1));
             SendMessageW(state.listView, ContextMessage(), 0, 0);
+            checkMenuCues(true);
             waitMenu();
             Require(state.contextMenus == before + 1 && !state.menuStyle.empty(),
                     "Keyboard context menu did not open");
@@ -524,8 +563,15 @@ void ValidateShellBehavior(const std::wstring& path) {
                 keyboardTitles = titles();
             }
         }
+        testKeys(false, true);
+        rightClick(empty, false);
+        testKeys(false, true);
+        rightClick(item, false);
+        testKeys(false);
         auto menus = state.contextMenus - initialMenus;
         UINT64 shiftMenus = 0;
+        UINT64 pointerMenus = 0;
+        UINT pointerKeyTips = 0;
         if (!state.testHost) {
             testKeys(true);
             auto before = state.contextMenus;
@@ -545,6 +591,56 @@ void ValidateShellBehavior(const std::wstring& path) {
                     "Shift keyboard menu was not classic");
             shiftMenus = state.contextMenus - before;
             Require(shiftMenus == 3, "Shift menu count changed");
+
+            testKeys(false);
+            for (bool onItem : {false, true}) {
+                SetForegroundWindow(GetAncestor(state.listView, GA_ROOT));
+                SetFocus(state.listView);
+                auto point = item;
+                if (!onItem) {
+                    point = POINT{-1, -1};
+                    for (LONG y = client.bottom - 4; y >= 0 && point.x < 0; y -= 16) {
+                        for (LONG x = client.right - 4; x >= 0; x -= 16) {
+                            POINT candidate{x, y};
+                            ClientToScreen(state.listView, &candidate);
+                            if (HitTestPaintedItem(POINT{x, y}) < 0 &&
+                                WindowFromPoint(candidate) == state.listView) {
+                                point = POINT{x, y};
+                                break;
+                            }
+                        }
+                    }
+                    Require(point.x >= 0,
+                            "No visible desktop background available for mouse input");
+                }
+                ClientToScreen(state.listView, &point);
+                Require(WindowFromPoint(point) == state.listView,
+                        "Mouse context menu point is covered by another window");
+                state.menuCapturePath =
+                    path + (onItem ? L"-mouse-item.png" : L"-mouse-background.png");
+                INPUT inputs[3]{};
+                for (auto& input : inputs) {
+                    input.type = INPUT_MOUSE;
+                }
+                inputs[0].mi.dx = MulDiv(point.x - GetSystemMetrics(SM_XVIRTUALSCREEN), 65535,
+                                         GetSystemMetrics(SM_CXVIRTUALSCREEN) - 1);
+                inputs[0].mi.dy = MulDiv(point.y - GetSystemMetrics(SM_YVIRTUALSCREEN), 65535,
+                                         GetSystemMetrics(SM_CYVIRTUALSCREEN) - 1);
+                inputs[0].mi.dwFlags =
+                    MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+                inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+                inputs[2].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+                auto beforePointerMenu = state.contextMenus;
+                Require(SendInput(3, inputs, sizeof(INPUT)) == 3, "Mouse menu input failed");
+                waitMenu(beforePointerMenu + 1);
+                Require(state.contextMenus == beforePointerMenu + 1,
+                        "Mouse input did not open one context menu");
+                Require(state.contextKeyTips == 0 || alwaysShowCues,
+                        "Mouse context menu displayed WinUI keytip popups without Alt");
+                Require(!state.menuCaptureFailed, "Mouse context menu capture failed");
+                pointerKeyTips += state.contextKeyTips;
+                ++pointerMenus;
+            }
         }
         state.menuTest = false;
         cleanup();
@@ -555,8 +651,12 @@ void ValidateShellBehavior(const std::wstring& path) {
                        std::to_wstring(!state.testHost) + L",\"nativeMenusOpened\":" +
                        std::to_wstring(menus) + L",\"defaultStyle\":" +
                        QuoteInteraction(defaultStyle) + L",\"shiftClassicMenusOpened\":" +
-                       std::to_wstring(shiftMenus) +
-                       L",\"singleRightClick\":true,\"keyboardContext\":true,\"backgroundMenu\":" +
+                       std::to_wstring(shiftMenus) + L",\"pointerMenusOpened\":" +
+                       std::to_wstring(pointerMenus) + L",\"pointerKeyTipPopups\":" +
+                       std::to_wstring(pointerKeyTips) +
+                       L",\"singleRightClick\":true,\"keyboardContext\":true,"
+                       L"\"mouseMenuCues\":true,\"keyboardMenuCues\":true,\"altMenuCues\":true,"
+                       L"\"backgroundMenu\":" +
                        backgroundTitles + L",\"itemMenu\":" + itemTitles + L",\"keyboardMenu\":" +
                        keyboardTitles + L"}");
     } catch (const std::exception& ex) {
@@ -566,6 +666,7 @@ void ValidateShellBehavior(const std::wstring& path) {
             WriteUtf16(path, L"{\"passed\":false,\"reason\":" + QuoteInteraction(message) +
                                  L",\"requests\":" + std::to_wstring(state.contextRequests) +
                                  L",\"menus\":" + std::to_wstring(state.contextMenus) +
+                                 L",\"keyTips\":" + std::to_wstring(state.contextKeyTips) +
                                  L",\"titles\":" + titles() + L"}");
         } catch (...) {
         }
