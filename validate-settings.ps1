@@ -3,16 +3,18 @@
 param([string]$BinaryDirectory = "$PSScriptRoot\build\bin")
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\scripts\TestSupport.ps1"
+. "$PSScriptRoot\scripts\SettingsPublish.ps1"
 $BinaryDirectory = [IO.Path]::GetFullPath($BinaryDirectory)
 $settings = Join-Path $BinaryDirectory 'Settings\DekaDesktopIcon.Settings.exe'
 if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) {
     throw 'Build the WinUI settings companion before running this test.'
 }
+$requiredRuntime = Assert-DekaSettingsPublish -Directory (Split-Path $settings -Parent)
 $validation = Join-Path $PSScriptRoot "build\validation\settings-$PID"
 $fakeBin = Join-Path $validation 'fake'
 Push-Location "$PSScriptRoot\src\Settings"
 try {
-    & dotnet publish Tools/FakeNative/FakeNative.csproj -c Release -r win-x64 --self-contained true `
+    & dotnet publish Tools/FakeNative/FakeNative.csproj -c Release -r win-x64 --self-contained false `
         -p:Platform=x64 "-p:DekaSettingsBuildRoot=$validation\intermediate\" -o $fakeBin
     if ($LASTEXITCODE -ne 0) { throw 'Building the test-only controller failed.' }
 } finally {
@@ -63,7 +65,7 @@ try {
         }
         $checks += [pscustomobject]@{ name=$case.Name; passed=$true; compact=$state.compact; theme=$state.theme }
     }
-    [pscustomobject]@{ passed=$true; desktopChanged=$false; checks=$checks } | ConvertTo-Json -Depth 4
+    [pscustomobject]@{ passed=$true; requiredRuntime=$requiredRuntime; bundledDotNetRuntime=$false; desktopChanged=$false; checks=$checks } | ConvertTo-Json -Depth 4
 } finally {
     foreach ($name in $variables) { [Environment]::SetEnvironmentVariable($name, $previous[$name], 'Process') }
 }

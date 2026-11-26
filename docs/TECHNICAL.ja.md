@@ -40,6 +40,8 @@ ListView と親の `SHELLDLL_DefView` のサブクラス、および関連状態
 
 設定画面は Windows App SDK の WinUI 3 コントロール・Mica・テーマリソースを使用し、ネイティブコントローラーを非同期起動して一時 JSON ファイルで結果を受け取ります。サイズ設定は画像プロファイルと別の `.resident.ini` に保存します。常駐への操作は `WM_COPYDATA` で直列化し、コアへの操作中の再入を防止します。`TaskbarCreated` では通知領域へ再登録し、定期確認で Explorer プロセス／ListView の再作成を検出して再適用します。試用期限による解除は再適用しません。終了時は復元の成功後にトレイと常駐ウィンドウを破棄します。
 
+設定画面は `SelfContained=false` とし、インストール済みの .NET 10 x64 ランタイムを使用します。`Microsoft.WindowsAppSDK.WinUI` とその依存だけを参照し、`WindowsAppSDKSelfContained=true` で WinUI の実行に必要なライブラリを配置します。発行は一時フォルダーへ行い、検証成功後に以前の発行フォルダーを置き換えます。ビルドと ZIP 作成は `scripts/SettingsPublish.ps1` で実行時設定を確認し、.NET 本体を同梱した成果物の混入を防ぎます。
+
 ## 描画と同期
 
 `EnumDisplayMonitors` と `MONITORINFO::rcWork` から、面積が最小の物理ピクセル作業領域を選択します。`requestedSize == 0` は自動モードで、間隔・ラベル・配置の余白を含むグリッドに約 2～3 個収まるサイズを 64～4096 px・16 px 刻みで計算します。画面構成変更時にも自動サイズを再計算します。

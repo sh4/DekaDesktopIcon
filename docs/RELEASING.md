@@ -18,13 +18,15 @@ Artifact には `DekaDesktopIcon-<version>-windows-x64.zip` と `SHA256SUMS.txt`
 
 - `DekaDesktopIcon.exe`
 - `DekaDesktopIconCore.dll`
-- `Settings/`（WinUI 3 設定画面と自己完結型 .NET / Windows App SDK ランタイム）
+- `Settings/`（WinUI 3 設定画面と必要な Windows App SDK ライブラリ）
 - `LICENSE`
 - `README.md`
 - `CHANGELOG.md`
 - `BUILD-INFO.txt`（バージョン・構成・ソースコミット）
 
 EXE、DLL、`Settings` フォルダーを同じフォルダーに展開します。テストプログラムや中間生成物は同梱しません。ダウンロードした ZIP の SHA-256 は PowerShell の `Get-FileHash -Algorithm SHA256 <ZIP のパス>` で照合できます。
+
+設定画面は実行環境の **.NET 10 Runtime（x64）** を使用します。リリース ZIP には .NET ランタイムを含めません。パッケージ作成時は実行時設定と同梱ファイルを検査し、古い自己完結型ビルドや .NET ランタイムが残ったフォルダーを拒否します。
 
 ## 実行権限と保護
 

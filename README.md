@@ -15,7 +15,7 @@ Windows x64、Visual Studio の「C++ によるデスクトップ開発」、Win
 .\build\bin\DekaDesktopIcon.exe
 ```
 
-生成物は次のとおりです。EXE・DLL と `Settings` フォルダーをまとめて配置してください。設定画面には .NET と Windows App SDK のランタイムを同梱します。
+生成物は次のとおりです。EXE・DLL と `Settings` フォルダーをまとめて配置してください。設定画面の実行には **.NET 10 Runtime（x64）** が必要です。WinUI に必要な Windows App SDK ライブラリを同梱します。
 
 | ファイル | 用途 |
 | --- | --- |
@@ -26,6 +26,8 @@ Windows x64、Visual Studio の「C++ によるデスクトップ開発」、Win
 | DekaDesktopIconSortTest.exe | 開発用の Explorer 並べ替え検証 |
 
 `build.ps1 -Configuration Debug`、`-OutputDirectory <フォルダー>` も指定できます。コアの開発・回帰試験だけを行う場合は `-NativeOnly` で設定画面のビルドを省略できます。CMake を使う場合は、インストール済み Visual Studio のジェネレーターを指定します。
+
+設定画面は `SelfContained=false` で発行し、実行環境の .NET 10 を使用します。SDK の参照は WinUI コンポーネントへ絞っています。再ビルド時は以前の設定画面の出力フォルダーを置き換え、古い .NET ランタイムや使わなくなった依存ファイルが残ることを防ぎます。
 
 ```powershell
 cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64
@@ -91,6 +93,7 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 .\validate-display-scaling.ps1
 .\validate-resident.ps1
 .\validate-settings.ps1
+.\tests\Test-SettingsPublishing.ps1
 .\validate-sort.ps1
 .\validate-interaction.ps1
 .\validate-interaction.ps1 -DropFeedbackOnly

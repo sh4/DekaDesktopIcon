@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 sh4
 cmake_minimum_required(VERSION 3.21)
-project(DekaDesktopIcon VERSION 1.5.0 LANGUAGES CXX)
+project(DekaDesktopIcon VERSION 1.5.1 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "DekaDesktopIcon requires the Windows x64 MSVC toolchain.")
@@ -51,7 +51,7 @@ add_custom_target(DekaDesktopIconSettings ALL
         -OutputDirectory "${CMAKE_BINARY_DIR}/bin/Settings"
         -Configuration "$<IF:$<CONFIG:Debug>,Debug,Release>"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Publishing the self-contained WinUI 3 settings window"
+    COMMENT "Publishing the WinUI 3 settings window for the installed .NET runtime"
     VERBATIM
 )
 

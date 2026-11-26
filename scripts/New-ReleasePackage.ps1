@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\SettingsPublish.ps1"
 $repo = Split-Path $PSScriptRoot -Parent
 $BinaryDirectory = [IO.Path]::GetFullPath($BinaryDirectory)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
@@ -34,7 +35,7 @@ $staging = Join-Path $OutputDirectory ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging | Out-Null
 
 try {
-    # Ship the native controller/core and the self-contained WinUI companion.
+    # Ship the native controller/core and WinUI files, using the installed .NET runtime.
     foreach ($name in @('DekaDesktopIcon.exe', 'DekaDesktopIconCore.dll')) {
         $source = Join-Path $BinaryDirectory $name
         if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -48,6 +49,7 @@ try {
     if (-not (Test-Path -LiteralPath $settingsExe -PathType Leaf)) {
         throw 'The WinUI 3 settings companion is missing. Build without -NativeOnly.'
     }
+    $requiredRuntime = Assert-DekaSettingsPublish -Directory $settingsSource
     $settingsDestination = Join-Path $staging 'Settings'
     New-Item -ItemType Directory -Path $settingsDestination | Out-Null
     Get-ChildItem -LiteralPath $settingsSource -File -Recurse | Where-Object Extension -ne '.pdb' |
@@ -63,7 +65,8 @@ try {
     @(
         "Version: $version"
         'Platform: Windows x64'
-        'Configuration: Release (static MSVC core; self-contained .NET/Windows App SDK settings)'
+        'Configuration: Release (static MSVC core; framework-dependent .NET; bundled WinUI)'
+        "Required runtime: Microsoft.NETCore.App $requiredRuntime or a later .NET 10 patch (x64)"
         "Source commit: $commit"
     ) | Set-Content -LiteralPath (Join-Path $staging 'BUILD-INFO.txt') -Encoding utf8
 
