@@ -34,7 +34,7 @@ function Invoke-DekaCommand {
         throw "Missing command report: $Report"
     }
 
-    $result = Get-Content -Raw -LiteralPath $Report | ConvertFrom-Json
+    $result = Get-Content -Raw -Encoding utf8 -LiteralPath $Report | ConvertFrom-Json
     if ($process.ExitCode -ne $ExpectedExit) {
         throw "$(Split-Path $Report -Leaf): exit $($process.ExitCode) / $($result.message)"
     }

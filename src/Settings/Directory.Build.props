@@ -1,0 +1,14 @@
+<Project>
+  <!--
+    Keeps bin/obj out of the source tree. Override DekaSettingsBuildRoot on the command line
+    (e.g. -p:DekaSettingsBuildRoot=C:\out\settings\) to place intermediates elsewhere.
+    Relative values are resolved against this directory (src/Settings), for every project below it.
+  -->
+  <PropertyGroup>
+    <DekaSettingsBuildRoot Condition="'$(DekaSettingsBuildRoot)' == ''">..\..\build\settings\</DekaSettingsBuildRoot>
+    <!-- Command-line properties are immutable, so the resolved value gets its own name. -->
+    <DekaSettingsBuildRootFull>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '$(DekaSettingsBuildRoot)'))</DekaSettingsBuildRootFull>
+    <BaseIntermediateOutputPath>$(DekaSettingsBuildRootFull)obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(DekaSettingsBuildRootFull)out\$(MSBuildProjectName)\</BaseOutputPath>
+  </PropertyGroup>
+</Project>

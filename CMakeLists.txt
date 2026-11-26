@@ -46,6 +46,15 @@ foreach(target IN LISTS deka_targets)
     endforeach()
 endforeach()
 
+add_custom_target(DekaDesktopIconSettings ALL
+    COMMAND powershell -NoProfile -File "${CMAKE_SOURCE_DIR}/scripts/Build-Settings.ps1"
+        -OutputDirectory "${CMAKE_BINARY_DIR}/bin/Settings"
+        -Configuration "$<IF:$<CONFIG:Debug>,Debug,Release>"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Publishing the self-contained WinUI 3 settings window"
+    VERBATIM
+)
+
 add_custom_target(check-source-style
     COMMAND powershell -NoProfile
         -File "${CMAKE_SOURCE_DIR}/scripts/Test-SourceStyle.ps1"

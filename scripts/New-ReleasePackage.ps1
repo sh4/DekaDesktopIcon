@@ -34,7 +34,7 @@ $staging = Join-Path $OutputDirectory ([guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging | Out-Null
 
 try {
-    # Only ship the two runtime binaries, never test hosts or intermediate files.
+    # Ship the native controller/core and the self-contained WinUI companion.
     foreach ($name in @('DekaDesktopIcon.exe', 'DekaDesktopIconCore.dll')) {
         $source = Join-Path $BinaryDirectory $name
         if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -43,13 +43,27 @@ try {
         }
         Copy-Item -LiteralPath $source -Destination $staging
     }
+    $settingsSource = Join-Path $BinaryDirectory 'Settings'
+    $settingsExe = Join-Path $settingsSource 'DekaDesktopIcon.Settings.exe'
+    if (-not (Test-Path -LiteralPath $settingsExe -PathType Leaf)) {
+        throw 'The WinUI 3 settings companion is missing. Build without -NativeOnly.'
+    }
+    $settingsDestination = Join-Path $staging 'Settings'
+    New-Item -ItemType Directory -Path $settingsDestination | Out-Null
+    Get-ChildItem -LiteralPath $settingsSource -File -Recurse | Where-Object Extension -ne '.pdb' |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($settingsSource.Length).TrimStart('\')
+            $destination = Join-Path $settingsDestination $relative
+            New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force | Out-Null
+            Copy-Item -LiteralPath $_.FullName -Destination $destination
+        }
     foreach ($name in @('LICENSE', 'README.md', 'CHANGELOG.md')) {
         Copy-Item -LiteralPath (Join-Path $repo $name) -Destination $staging
     }
     @(
         "Version: $version"
         'Platform: Windows x64'
-        'Configuration: Release (static MSVC runtime)'
+        'Configuration: Release (static MSVC core; self-contained .NET/Windows App SDK settings)'
         "Source commit: $commit"
     ) | Set-Content -LiteralPath (Join-Path $staging 'BUILD-INFO.txt') -Encoding utf8
 
@@ -69,7 +83,11 @@ try {
     Write-Output "Release package: $archivePath"
     Write-Output "SHA256: $hash"
 } finally {
-    # The staging directory only contains the flat, explicit file list above.
-    Get-ChildItem -LiteralPath $staging -File | Remove-Item -Force
-    Remove-Item -LiteralPath $staging
+    # Only remove the verified staging directory created under the release output.
+    $resolvedStaging = [IO.Path]::GetFullPath($staging)
+    $expectedParent = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\')
+    if ((Split-Path $resolvedStaging -Parent) -ne $expectedParent) {
+        throw 'Refusing to remove a staging path outside the release output directory.'
+    }
+    Remove-Item -LiteralPath $resolvedStaging -Recurse -Force
 }

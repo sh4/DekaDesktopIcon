@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sh4
 #include "Imaging.h"
+#include "DisplayScaling.h"
 #include <atomic>
 #include <mutex>
 #include <windowsx.h>
@@ -76,6 +77,10 @@ struct State {
     bool originalDropRegistered = false;
     // Original shell resources remain shell-owned and are restored on removal.
     int iconSize = 1024;
+    int requestedIconSize = 1024;
+    SIZE referenceDisplaySize{};
+    SIZE currentDisplaySize{};
+    SIZE currentViewSize{};
     LONG_PTR originalStyle = 0;
     DWORD originalExtendedStyle = 0;
     DWORD originalView = 0;
@@ -283,16 +288,17 @@ bool RefreshItems(bool force = false) {
 void ArrangeDesktopItems() {
     RECT client{};
     GetClientRect(state.listView, &client);
-    int spacingX = state.iconSize + 48, spacingY = state.iconSize + 68;
+    int spacingX = state.iconSize + IconSpacingMarginX;
+    int spacingY = state.iconSize + IconSpacingMarginY;
     ListView_SetIconSpacing(state.listView, spacingX, spacingY);
     if (IsAutoArrangeEnabled()) {
         ListView_Arrange(state.listView, LVA_DEFAULT);
         return;
     }
-    int rows = std::max(1L, (client.bottom - 20) / spacingY);
+    int rows = std::max(1L, (client.bottom - DesktopGridMarginY) / spacingY);
     for (int i = 0; i < ListView_GetItemCount(state.listView); ++i) {
-        ListView_SetItemPosition32(state.listView, i, 16 + (i / rows) * spacingX,
-                                   16 + (i % rows) * spacingY);
+        ListView_SetItemPosition32(state.listView, i, DesktopGridMarginX + (i / rows) * spacingX,
+                                   DesktopGridMarginX + (i % rows) * spacingY);
     }
     if (IsSnapToGridEnabled()) {
         SnapItems();
@@ -310,6 +316,23 @@ void SynchronizeDesktop() {
     state.layoutPending = false;
     state.refreshing = true;
     try {
+        SIZE displaySize = ReadDisplaySize(state.listView, state.testHost);
+        if (IsUsableDisplaySize(displaySize) && (displaySize.cx != state.currentDisplaySize.cx ||
+                                                 displaySize.cy != state.currentDisplaySize.cy)) {
+            state.iconSize = state.requestedIconSize == 0
+                                 ? CalculateAutomaticIconSize(displaySize)
+                                 : ScaleIconSize(state.requestedIconSize,
+                                                 state.referenceDisplaySize, displaySize);
+            state.currentDisplaySize = displaySize;
+            layout = true;
+        }
+        // Explorer may resize its ListView after the monitor change was already handled.
+        SIZE viewSize = ReadDisplayViewSize(state.listView);
+        if (IsUsableDisplaySize(viewSize) &&
+            (viewSize.cx != state.currentViewSize.cx || viewSize.cy != state.currentViewSize.cy)) {
+            state.currentViewSize = viewSize;
+            layout = true;
+        }
         EnsureImageList();
         LONG_PTR style = GetWindowLongPtrW(state.listView, GWL_STYLE);
         LONG_PTR wanted = (style | LVS_SHAREIMAGELISTS) & ~LVS_TYPEMASK;
@@ -322,8 +345,10 @@ void SynchronizeDesktop() {
             ListView_SetExtendedListViewStyle(state.listView, wantedExtended);
         }
         DWORD spacing = static_cast<DWORD>(ListView_GetItemSpacing(state.listView, FALSE));
-        if (LOWORD(spacing) != state.iconSize + 48 || HIWORD(spacing) != state.iconSize + 68) {
-            ListView_SetIconSpacing(state.listView, state.iconSize + 48, state.iconSize + 68);
+        if (LOWORD(spacing) != state.iconSize + IconSpacingMarginX ||
+            HIWORD(spacing) != state.iconSize + IconSpacingMarginY) {
+            ListView_SetIconSpacing(state.listView, state.iconSize + IconSpacingMarginX,
+                                    state.iconSize + IconSpacingMarginY);
         }
         if (RefreshItems()) {
             layout = true;
@@ -434,9 +459,10 @@ void Restore() {
 }
 
 void Apply(HWND list, const SharedCommand& request) {
-    Require(request.requestedSize >= 64 && request.requestedSize <= 1024 &&
-                request.requestedSize % 16 == 0,
-            "Size must be 64..1024 in steps of 16");
+    Require(request.requestedSize == 0 || (request.requestedSize >= MinIconSize &&
+                                           request.requestedSize <= MaxManualIconSize &&
+                                           request.requestedSize % IconSizeStep == 0),
+            "Size must be 0 (auto) or 64..1024 in steps of 16");
     Require(request.leaseSeconds <= 3600, "Lease exceeds 3600 seconds");
     Require(GetWindowClassName(list) == WC_LISTVIEWW &&
                 GetWindowThreadProcessId(list, nullptr) == GetCurrentThreadId(),
@@ -497,10 +523,17 @@ void Apply(HWND list, const SharedCommand& request) {
                                    reinterpret_cast<LPCWSTR>(&Apply), &callbackReference) != FALSE,
                 "Module reference unavailable");
     }
-    state.iconSize = static_cast<int>(request.requestedSize);
+    state.referenceDisplaySize = ReadDisplaySize(list, test);
+    Require(IsUsableDisplaySize(state.referenceDisplaySize), "Display size unavailable");
+    state.currentDisplaySize = state.referenceDisplaySize;
+    state.currentViewSize = ReadDisplayViewSize(list);
+    state.requestedIconSize = static_cast<int>(request.requestedSize);
+    state.iconSize = state.requestedIconSize == 0
+                         ? CalculateAutomaticIconSize(state.referenceDisplaySize)
+                         : state.requestedIconSize;
     state.customImages =
         ImageList_Create(state.iconSize, state.iconSize, ILC_COLOR32 | ILC_MASK, 1, 1);
-    Require(state.customImages != nullptr, "1024px image list allocation failed");
+    Require(state.customImages != nullptr, "Custom image list allocation failed");
     Require(ImageList_SetImageCount(state.customImages, 1) != FALSE,
             "Image list allocation failed");
     if (!SetWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId, 0)) {
@@ -544,9 +577,12 @@ void Apply(HWND list, const SharedCommand& request) {
         RedrawWindow(list, nullptr, nullptr,
                      RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         Status();
-        Require(shared->imageWidth == request.requestedSize,
+        Require(shared->imageWidth == static_cast<DWORD>(state.iconSize) &&
+                    shared->imageHeight == static_cast<DWORD>(state.iconSize),
                 "ListView rejected requested image size");
-        SetMessage(L"Explorer 内のデスクトップ描画を差し替えました。");
+        SetMessage(L"Explorer "
+                   L"内のデスクトップ描画を差し替えました。解像度の変更に合わせてサイズを自動調整し"
+                   L"ます。");
     } catch (...) {
         Restore();
         throw;
@@ -619,8 +655,8 @@ void SnapItems() {
     // cell. Snap painted bounds to the configured grid and extend the virtual
     // desktop horizontally, keeping stationary items ahead of a moved selection.
     LONG offsetX = position.x - first.left - origin.x, offsetY = position.y - first.top - origin.y;
-    LONG sx = state.iconSize + 48, sy = state.iconSize + 68,
-         rows = std::max(1L, (client.bottom - 20) / sy);
+    LONG sx = state.iconSize + IconSpacingMarginX, sy = state.iconSize + IconSpacingMarginY,
+         rows = std::max(1L, (client.bottom - DesktopGridMarginY) / sy);
     std::vector<std::pair<LONG, LONG>> occupied;
     for (int selected = 0; selected <= 1; ++selected) {
         for (int i = 0; i < count; ++i) {
@@ -756,6 +792,13 @@ void DrawItem(NMLVCUSTOMDRAW* draw) {
 LRESULT CALLBACK ParentProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR,
                             DWORD_PTR) {
     ObserveContextMenu(message, wParam, lParam);
+    if (state.active &&
+        (message == WM_DISPLAYCHANGE || message == WM_SIZE || message == WM_DPICHANGED ||
+         message == WM_DPICHANGED_AFTERPARENT || message == WM_SETTINGCHANGE)) {
+        LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        QueueSynchronization();
+        return result;
+    }
     if (message == WM_NOTIFY && state.active) {
         auto header = reinterpret_cast<NMHDR*>(lParam);
         if (header && header->hwndFrom == state.listView && header->code == LVN_GETDISPINFOW) {
@@ -805,6 +848,13 @@ LRESULT CALLBACK ParentProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR,
                           DWORD_PTR) {
     ObserveContextMenu(message, wParam, lParam);
+    if (state.active &&
+        (message == WM_DISPLAYCHANGE || message == WM_SIZE || message == WM_DPICHANGED ||
+         message == WM_DPICHANGED_AFTERPARENT || message == WM_SETTINGCHANGE)) {
+        LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        QueueSynchronization();
+        return result;
+    }
     if (state.active && !state.baseGeometry && message == LVM_GETITEMRECT && lParam) {
         auto rect = reinterpret_cast<RECT*>(lParam);
         int kind = rect->left;
@@ -844,8 +894,9 @@ LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
         return reinterpret_cast<LRESULT>(previous);
     }
     if (state.active && !state.refreshing && message == LVM_SETICONSPACING) {
-        LRESULT result = DefSubclassProc(hwnd, message, wParam,
-                                         MAKELPARAM(state.iconSize + 48, state.iconSize + 68));
+        LRESULT result = DefSubclassProc(
+            hwnd, message, wParam,
+            MAKELPARAM(state.iconSize + IconSpacingMarginX, state.iconSize + IconSpacingMarginY));
         QueueSynchronization();
         return result;
     }
@@ -915,6 +966,7 @@ LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
                 SetMessage(L"時間制限により自動解除しました。");
                 return 0;
             }
+            // Also re-read the display if Explorer did not forward a change notification.
             SynchronizeDesktop();
         } catch (...) {
             try {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 sh4
 #include "ImagingChecks.h"
+#include "DisplayScalingChecks.h"
 #include <shellapi.h>
 #include <windowsx.h>
 #include <uxtheme.h>
@@ -14,6 +15,10 @@ HIMAGELIST images = nullptr;
 
 UINT ExerciseMessage() {
     return RegisterWindowMessageW(L"DekaDesktopIcon.TestHost.Exercise.v1");
+}
+
+UINT DisplaySizeMessage() {
+    return RegisterWindowMessageW(L"DekaDesktopIcon.TestHost.DisplaySize.v1");
 }
 
 int CALLBACK Compare(LPARAM left, LPARAM right, LPARAM direction) {
@@ -51,10 +56,12 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
             return FALSE;
         }
         try {
+            SIZE display = ReadDisplaySize(list, true);
             DWORD spacing = static_cast<DWORD>(ListView_GetItemSpacing(list, FALSE));
             std::wstring json =
-                L"{\"spacingX\":" + std::to_wstring(LOWORD(spacing)) + L",\"spacingY\":" +
-                std::to_wstring(HIWORD(spacing)) + L",\"autoArrange\":" +
+                L"{\"displayWidth\":" + std::to_wstring(display.cx) + L",\"displayHeight\":" +
+                std::to_wstring(display.cy) + L",\"spacingX\":" + std::to_wstring(LOWORD(spacing)) +
+                L",\"spacingY\":" + std::to_wstring(HIWORD(spacing)) + L",\"autoArrange\":" +
                 std::to_wstring((GetWindowLongPtrW(list, GWL_STYLE) & LVS_AUTOARRANGE) != 0) +
                 L",\"snapToGrid\":" +
                 std::to_wstring((ListView_GetExtendedListViewStyle(list) & LVS_EX_SNAPTOGRID) !=
@@ -109,6 +116,14 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_SIZE && list) {
         MoveWindow(list, 0, 0, LOWORD(lParam), HIWORD(lParam), TRUE);
         return 0;
+    }
+    if (message == DisplaySizeMessage() && list) {
+        bool resized = SetWindowPos(list, nullptr, 0, 0, LOWORD(lParam), HIWORD(lParam),
+                                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+        // Match both the ListView resize and the parent notifications from Explorer.
+        SendMessageW(hwnd, WM_DISPLAYCHANGE, 32, lParam);
+        SendMessageW(list, WM_DPICHANGED_AFTERPARENT, 0, 0);
+        return resized ? 1 : 0;
     }
     if (message == ExerciseMessage()) {
         SendMessageW(list, WM_SETREDRAW, FALSE, 0);
@@ -193,6 +208,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     int argc = 0;
     auto args = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argc == 2 && !wcscmp(args[1], L"--check-display-scaling")) {
+        int result = 0;
+        try {
+            CheckDisplayScaling();
+        } catch (...) {
+            result = 1;
+        }
+        LocalFree(args);
+        return result;
+    }
     bool imaging = argc == 5 && !wcscmp(args[1], L"--check-imaging");
     HRESULT com =
         CoInitializeEx(nullptr, imaging ? COINIT_MULTITHREADED : COINIT_APARTMENTTHREADED);
@@ -232,6 +257,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             SendMessageTimeoutW(desktop.parent, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data),
                                 SMTO_ABORTIFHUNG, 5000, &result) &&
             result == TRUE;
+        LocalFree(args);
+        CoUninitialize();
+        return ok ? 0 : 1;
+    }
+    if (argc == 4 && !wcscmp(args[1], L"--display-size")) {
+        int width = _wtoi(args[2]), height = _wtoi(args[3]);
+        auto desktop = FindDesktop(true);
+        DWORD_PTR result = 0;
+        bool ok = width >= 0 && width <= 32767 && height >= 0 && height <= 32767 &&
+                  desktop.parent &&
+                  SendMessageTimeoutW(desktop.parent, DisplaySizeMessage(), 0,
+                                      MAKELPARAM(width, height), SMTO_ABORTIFHUNG, 5000, &result) &&
+                  result == 1;
         LocalFree(args);
         CoUninitialize();
         return ok ? 0 : 1;

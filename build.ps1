@@ -2,7 +2,8 @@
 # Copyright (c) 2026 sh4
 param(
     [string]$OutputDirectory = "$PSScriptRoot\build\bin",
-    [ValidateSet('Release', 'Debug')][string]$Configuration = 'Release'
+    [ValidateSet('Release', 'Debug')][string]$Configuration = 'Release',
+    [switch]$NativeOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,5 +58,9 @@ foreach ($target in $targets) {
     if ($LASTEXITCODE -ne 0) {
         throw "Linking failed: $($target.Name)"
     }
+}
+if (-not $NativeOnly) {
+    & "$PSScriptRoot\scripts\Build-Settings.ps1" -OutputDirectory (Join-Path $OutputDirectory 'Settings') `
+        -Configuration $Configuration
 }
 Write-Output "Built DekaDesktopIcon: $OutputDirectory"

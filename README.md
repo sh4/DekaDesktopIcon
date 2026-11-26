@@ -1,6 +1,6 @@
 # DekaDesktopIcon
 
-Explorer のデスクトップに 64～1024 px のアイコンを描画する Windows x64 用ツールです。DLL を実行中の Explorer に読み込み、実際のデスクトップ ListView の描画・座標処理をカスタマイズします。独立したランチャーやデスクトップの置き換えではありません。
+Explorer のデスクトップアイコンを画面に 2～3 個程度収まる大きさへ自動拡大する Windows x64 用ツールです。DLL を実行中の Explorer に読み込み、実際のデスクトップ ListView の描画・座標処理をカスタマイズします。
 
 デスクトップ上の項目、選択、ドラッグ、並べ替え、自動整列を使用できます。コンテキストメニューは既存の Explorer ビューに表示を委譲するため、Windows 11 の新形式／従来形式の設定に従います。
 
@@ -8,23 +8,24 @@ Explorer のデスクトップに 64～1024 px のアイコンを描画する Wi
 
 ## ビルド
 
-Windows x64、Visual Studio の「C++ によるデスクトップ開発」と Windows SDK が必要です。PowerShell から実行します。
+Windows x64、Visual Studio の「C++ によるデスクトップ開発」、Windows SDK、.NET 10 SDK が必要です。WinUI 3 設定画面の初回ビルドでは NuGet への接続が必要です。PowerShell から実行します。
 
 ```powershell
 .\build.ps1
 .\build\bin\DekaDesktopIcon.exe
 ```
 
-生成物は次のとおりです。同じフォルダーの EXE と DLL を組み合わせて使用してください。
+生成物は次のとおりです。EXE・DLL と `Settings` フォルダーをまとめて配置してください。設定画面には .NET と Windows App SDK のランタイムを同梱します。
 
 | ファイル | 用途 |
 | --- | --- |
-| DekaDesktopIcon.exe | 設定画面・コマンドライン操作 |
+| DekaDesktopIcon.exe | トレイ常駐・コマンドライン操作 |
 | DekaDesktopIconCore.dll | Explorer 内で動く描画・入力処理 |
+| Settings/DekaDesktopIcon.Settings.exe | WinUI 3 の設定画面 |
 | DekaDesktopIconTestHost.exe | 開発用のネイティブ ListView ホスト |
 | DekaDesktopIconSortTest.exe | 開発用の Explorer 並べ替え検証 |
 
-`build.ps1 -Configuration Debug`、`-OutputDirectory <フォルダー>` も指定できます。CMake を使う場合は、インストール済み Visual Studio のジェネレーターを指定します。
+`build.ps1 -Configuration Debug`、`-OutputDirectory <フォルダー>` も指定できます。コアの開発・回帰試験だけを行う場合は `-NativeOnly` で設定画面のビルドを省略できます。CMake を使う場合は、インストール済み Visual Studio のジェネレーターを指定します。
 
 ```powershell
 cmake -S . -B build/cmake -G "Visual Studio 17 2022" -A x64
@@ -37,12 +38,16 @@ GitHub Actions では **Build release binaries** を管理者が手動実行す�
 
 ## 使い方
 
-1. `DekaDesktopIcon.exe` を起動し、表示サイズを選んで「Explorer に適用」を押します。
-2. 初期状態では 30 秒後に自動解除します。継続利用する場合は試用のチェックを外して適用します。
-3. 高解像度画像を使う場合は項目を選択し、「画像を選択…」「画像の割り当てを保存」で登録して再適用します。
-4. 「解除・元の配置へ復元」で標準の描画・間隔・配置に戻します。
+1. `DekaDesktopIcon.exe` を起動すると、設定画面を表示せず、自動サイズで拡大してタスクトレイへ常駐します。初期状態に時間制限はありません。
+2. トレイアイコンを左クリックすると WinUI 3 の設定画面を開きます。自動／手動サイズ、30 秒の試用、画像割り当て、状態、保存済み配置の復旧を操作できます。
+3. トレイアイコンを右クリックすると、設定、有効、無効、終了を選べます。無効にすると標準の描画・間隔・配置に戻し、常駐は続けます。
+4. 設定画面を閉じても常駐を続けます。「終了」は拡大を解除し、元の配置を復元してアプリを終了します。
 
-設定画面を閉じてもパッチは Explorer 内で動作します。Explorer を再起動した場合は再適用が必要です。システムファイル、レジストリ、自動起動設定は変更しません。
+常駐中は Explorer の再起動後も拡大を再適用し、通知領域の再作成時にトレイアイコンを再登録します。30 秒の試用が終了した場合は再適用せず無効のままにします。システムファイル、レジストリ、自動起動設定は変更しません。
+
+マルチディスプレイでは作業領域の面積が最も小さいディスプレイを基準にします。自動モードは、ラベルや間隔も含めて画面内へ約 2～3 個収まるサイズを 16 px 刻み・64～4096 px で計算します。解像度・縦横・作業領域の変更時にも再計算します。項目数自体を制限する機能ではなく、残りの項目は画面外へ並ぶことがあります。
+
+手動モードは適用時の最小ディスプレイのサイズを基準に、縦横の解像度比の小さい方に合わせて 64～1024 px で調整します。たとえば 3840 × 2160 で 1024 px を適用後、1920 × 1080 に変わると 512 px になります。元の解像度に戻ると指定サイズへ戻り、再適用するとその時点の解像度が新しい基準になります。
 
 画像を割り当てていない項目は、Explorer の Shell が提供するサムネイルを優先して拡大表示します。サムネイルがない項目は標準アイコンを拡大します。縦横比を保って表示し、手動で割り当てた画像がある場合はそちらを優先します。
 
@@ -52,7 +57,7 @@ PNG / JPEG / BMP / ICO 等、Windows Imaging Component が読める画像に対�
 
 ### 設定と更新
 
-既定の設定は `%LOCALAPPDATA%\DekaDesktopIcon\profile.ini` です。画像設定の直前の内容は `.bak`、適用前の配置は `.rollback.ini`、診断情報は `.diagnostic.ini` に保存します。Explorer 再起動後の配置復旧には「保存済みの元の配置を復旧」を使用できます。
+既定の画像設定は `%LOCALAPPDATA%\DekaDesktopIcon\profile.ini` です。サイズと試用時間は `profile.ini.resident.ini` に保存します。画像設定の直前の内容は `.bak`、適用前の配置は `.rollback.ini`、診断情報は `.diagnostic.ini` に保存します。Explorer 再起動後の配置復旧には「保存済みの元の配置を復旧」を使用できます。
 
 改名前のツールを使用している場合は、旧版のコントローラーで解除してから DekaDesktopIcon を適用してください。旧版のパッチが有効な場合は重ねて適用することを拒否します。新しい設定ファイルがまだない場合に限り、旧 `%LOCALAPPDATA%\ExplorerIconPatch\profile.ini` の画像割り当てをコピーします。
 
@@ -61,12 +66,17 @@ PNG / JPEG / BMP / ICO 等、Windows Imaging Component が読める画像に対�
 ### コマンドライン
 
 ```powershell
+.\build\bin\DekaDesktopIcon.exe --settings
+.\build\bin\DekaDesktopIcon.exe --enable --size auto --lease 0 --report build\enabled.json
+.\build\bin\DekaDesktopIcon.exe --disable --report build\disabled.json
+.\build\bin\DekaDesktopIcon.exe --resident-state --report build\resident.json
+.\build\bin\DekaDesktopIcon.exe --exit --report build\exit.json
 .\build\bin\DekaDesktopIcon.exe --apply --size 1024 --lease 30 --report build\apply.json
 .\build\bin\DekaDesktopIcon.exe --status --report build\status.json
 .\build\bin\DekaDesktopIcon.exe --restore --report build\restore.json
 ```
 
-`--lease 0` は時間制限なし、`--profile <INI>` は設定ファイルの指定です。サイズは 64～1024、16 px 刻みです。GUI では 256 / 512 / 768 / 1024 を選択できます。
+`--enable` は常駐アプリ経由で適用し、未起動の場合は常駐を開始します。従来の `--apply` / `--restore` はコアを直接操作します。`--size auto` は自動サイズ、手動の基準サイズは 64～1024・16 px 刻みです。設定画面では自動／256／512／768／1024 を選べます。`--lease 0` は時間制限なし、`--profile <INI>` は設定ファイルの指定です。`--status` のサイズは自動調整後の実際の描画サイズです。
 
 ## 開発と検証
 
@@ -78,6 +88,9 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 .\validate.ps1
 .\validate-imaging.ps1
 .\validate-safety.ps1
+.\validate-display-scaling.ps1
+.\validate-resident.ps1
+.\validate-settings.ps1
 .\validate-sort.ps1
 .\validate-interaction.ps1
 .\validate-interaction.ps1 -DropFeedbackOnly
@@ -95,6 +108,8 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 ```
 
 各スクリプトの `-BinaryDirectory` で CMake 等の出力先を指定できます。結果は `build/validation` に出力します。操作・整列試験は 512 / 1024 px、並べ替え試験は画像リストの交換・縮小と実際の Shell コマンドを確認します。検証用の設定は通常利用の画像設定と分離しています。
+
+`validate-display-scaling.ps1` は独立ホストの表示領域を変更し、解像度比・サイズ上下限・縦横比変更・一時的な 0 サイズ・元の解像度への復帰・描画と当たり判定・再適用・期限付き復元を検証します。実際のディスプレイ設定やリモート接続は変更しません。
 
 構成・スレッド・復元処理については [技術メモ](docs/TECHNICAL.ja.md)、変更点は [CHANGELOG](CHANGELOG.md)、変更時の規則は [CONTRIBUTING](docs/CONTRIBUTING.md) を参照してください。
 

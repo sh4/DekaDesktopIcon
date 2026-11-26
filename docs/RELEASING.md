@@ -14,16 +14,17 @@ GitHub Actions の **Build release binaries** は Windows x64 の Release バイ
 
 再実行では、既存のタグが同じコミットを指すことを確認してアセットと説明を更新します。別のコミットを指している場合は停止するため、コードを変更して公開する際はバージョンを上げてください。アップロード途中の失敗で残ったドラフトは、再実行でアセットを再登録してから公開します。GitHub 側で Release の不変性を有効にしている場合、公開済みアセットの置き換えはできないため、新しいバージョンで実行してください（[GitHub CLI の Release 作成仕様](https://cli.github.com/manual/gh_release_create)）。
 
-Artifact には `DekaDesktopIcon-<version>-windows-x64.zip` と `SHA256SUMS.txt` が入ります。配布用 ZIP の内容は次の 6 ファイルです。
+Artifact には `DekaDesktopIcon-<version>-windows-x64.zip` と `SHA256SUMS.txt` が入ります。配布用 ZIP の内容は次のとおりです。
 
 - `DekaDesktopIcon.exe`
 - `DekaDesktopIconCore.dll`
+- `Settings/`（WinUI 3 設定画面と自己完結型 .NET / Windows App SDK ランタイム）
 - `LICENSE`
 - `README.md`
 - `CHANGELOG.md`
 - `BUILD-INFO.txt`（バージョン・構成・ソースコミット）
 
-EXE と DLL は同じフォルダーに展開します。テストプログラムや中間生成物は同梱しません。ダウンロードした ZIP の SHA-256 は PowerShell の `Get-FileHash -Algorithm SHA256 <ZIP のパス>` で照合できます。
+EXE、DLL、`Settings` フォルダーを同じフォルダーに展開します。テストプログラムや中間生成物は同梱しません。ダウンロードした ZIP の SHA-256 は PowerShell の `Get-FileHash -Algorithm SHA256 <ZIP のパス>` で照合できます。
 
 ## 実行権限と保護
 

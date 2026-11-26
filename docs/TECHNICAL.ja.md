@@ -6,12 +6,15 @@ DekaDesktopIcon は Explorer 自身のデスクトップ ListView に DLL を読
 
 | ファイル | 責務 |
 | --- | --- |
-| `src/DekaDesktopIcon.cpp` | GUI、引数処理、画像設定、JSON 出力 |
+| `src/DekaDesktopIcon.cpp` | 引数処理、画像設定、JSON 出力 |
+| `src/ResidentController.h` | 非表示コントローラー、単一起動、トレイ、設定画面の起動、再適用 |
+| `src/Settings/` | .NET 10 / WinUI 3 の設定画面、非同期 CLI ブリッジ |
 | `src/CommandClient.cpp` | 対象検証、排他、DLL フック、IPC、保存済み配置の復旧 |
 | `src/Protocol.h` | コマンド、共有メモリ形式、メッセージ識別子 |
 | `src/Win32Support.h` | パス、設定ファイル、共通 Win32 ヘルパー |
 | `src/ShellDesktop.h` | デスクトップ検出、IFolderView2、項目の識別、配置バックアップ |
 | `src/DekaDesktopIconCore.cpp` | 状態管理、ListView サブクラス、描画、同期、復元 |
+| `src/DisplayScaling.h` | 最小作業領域の選択、自動サイズ、手動サイズの比率計算 |
 | `src/Imaging.h` | WIC 読み込み、Shell 画像取得、GDI+ 変換 |
 | `src/Interaction.h` | 選択、範囲選択、内部移動、プレビュー、Shell ドラッグへの委譲 |
 | `src/DropTarget.h` | ドロップ先の座標変換、Shell のドロップ処理と画像の連携、登録の復元 |
@@ -19,6 +22,7 @@ DekaDesktopIcon は Explorer 自身のデスクトップ ListView に DLL を読
 | `tests/RegressionChecks.h` | コア内で実行する操作・整列・メニューの開発用検証 |
 | `tests/DragDropChecks.h` | ドロップ先の描画・座標・操作説明・委譲の回帰検証 |
 | `tests/DragFeedbackHost.h` | 実際のマウス入力と Shell 画像を使う、ファイル操作を実行しないプレビュー |
+| `tests/DisplayScalingChecks.h` | 解像度比・サイズ上下限・丸め・無効な寸法の回帰検証 |
 | `tests/DekaDesktopIconTestHost.cpp` | 独立したネイティブ ListView による試験 |
 | `tests/DekaDesktopIconSortTest.cpp` | 実際の Explorer の並べ替えコマンドの試験 |
 
@@ -32,9 +36,21 @@ DekaDesktopIcon は Explorer 自身のデスクトップ ListView に DLL を読
 
 ListView と親の `SHELLDLL_DefView` のサブクラス、および関連状態の変更はデスクトップ UI スレッドで実行します。画像読み込みはワーカーで行い、世代番号で古い結果を破棄します。公開された画像は mutex の下で参照を共有します。
 
+引数なしの起動は非表示のトップレベルウィンドウを作り、`Shell_NotifyIconW` の通知領域アイコンだけを表示します。セッション内の mutex で単一起動を保証します。左クリック／キーボード選択で `Settings/DekaDesktopIcon.Settings.exe` を起動し、右クリックで有効・無効・終了を選択します。設定プロセスは常駐プロセスを監視し、常駐終了時に閉じます。
+
+設定画面は Windows App SDK の WinUI 3 コントロール・Mica・テーマリソースを使用し、ネイティブコントローラーを非同期起動して一時 JSON ファイルで結果を受け取ります。サイズ設定は画像プロファイルと別の `.resident.ini` に保存します。常駐への操作は `WM_COPYDATA` で直列化し、コアへの操作中の再入を防止します。`TaskbarCreated` では通知領域へ再登録し、定期確認で Explorer プロセス／ListView の再作成を検出して再適用します。試用期限による解除は再適用しません。終了時は復元の成功後にトレイと常駐ウィンドウを破棄します。
+
 ## 描画と同期
 
-専用画像リストに指定サイズを設定し、`NM_CUSTOMDRAW` で画像・ラベル・選択表示を描きます。手動の画像割り当てを WIC で優先して読み込み、割り当てがない項目は `IShellItemImageFactory::GetImage` に最大描画サイズの 1024 px を要求します。`SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK` により Shell のサムネイルを優先し、サムネイルがない項目は標準アイコンを取得します。取得した画像は縦横比を保って中央に拡大表示します。
+`EnumDisplayMonitors` と `MONITORINFO::rcWork` から、面積が最小の物理ピクセル作業領域を選択します。`requestedSize == 0` は自動モードで、間隔・ラベル・配置の余白を含むグリッドに約 2～3 個収まるサイズを 64～4096 px・16 px 刻みで計算します。画面構成変更時にも自動サイズを再計算します。
+
+手動指定では適用時の最小作業領域と指定サイズを保存し、変更後の横幅比・高さ比の小さい方で指定サイズを拡縮して、64～1024 px・16 px 刻みに丸めます。常に適用時の値から計算するため、接続を繰り返しても丸め誤差が累積しません。
+
+ListView と Shell ビューの `WM_DISPLAYCHANGE` / `WM_SIZE` / DPI・設定変更で同期をポストし、既存の 1 秒タイマーでも現在の解像度を読み直します。通知の値をそのまま使わず、その時点の画面を取得します。[WM_DISPLAYCHANGE](https://learn.microsoft.com/en-us/windows/win32/gdi/wm-displaychange) の通知順や未転送でも次の同期で追従します。0 サイズなど一時的に取得できない状態は無視し、ドラッグ・移動の確定・メニューの最中は既存の同期と同様に保留します。
+
+変更の反映では専用画像リスト・描画・当たり判定に共通のサイズを更新し、間隔と配置を再計算します。ListView のウィンドウ寸法も比較し、画面の通知より遅れて領域が変わっても再配置します。元の画像リスト・配置バックアップ・試用期限・読み込み済み画像は保持します。独立ホストではスクロールバーを含む ListView のウィンドウ領域をディスプレイに見立て、実際の画面設定を変更せずに検証します。スクロールバーの出現だけで解像度が変わった扱いにはせず、手動の移動でスクロールバーが変わっても再配置しません。
+
+専用画像リストに指定サイズを設定し、`NM_CUSTOMDRAW` で画像・ラベル・選択表示を描きます。手動の画像割り当てを WIC で優先して読み込み、割り当てがない項目は `IShellItemImageFactory::GetImage` に最大 1024 px の元画像を要求します。`SIIGBF_RESIZETOFIT | SIIGBF_BIGGERSIZEOK` により Shell のサムネイルを優先し、サムネイルがない項目は標準アイコンを取得します。取得した画像は縦横比を保って中央に拡大表示します。
 
 Explorer が並べ替え等で画像リストを交換・縮小した場合は、最新の標準リストを復元対象として保持し、専用リストを再設定します。項目順・識別子・配置を同期し、元の配置のバックアップや試用期限を更新しません。項目の一致判定にはインデックスではなく Shell の解析名を使います。
 
