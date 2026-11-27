@@ -78,6 +78,9 @@ std::string Report(const DesktopTarget& desktop, const SharedCommand& status) {
       << ",\n  \"selectedCount\": " << status.selectedCount
       << ",\n  \"leaseDeadline\": " << status.leaseDeadline
       << ",\n  \"patchModule\": " << Json(status.ownerModule)
+      << ",\n  \"patchFileVolume\": " << status.ownerFile.volume
+      << ",\n  \"patchFileIndexHigh\": " << status.ownerFile.indexHigh
+      << ",\n  \"patchFileIndexLow\": " << status.ownerFile.indexLow
       << ",\n  \"profile\": " << Json(status.profile)
       << ",\n  \"message\": " << Json(status.message) << "\n}\n";
     return s.str();

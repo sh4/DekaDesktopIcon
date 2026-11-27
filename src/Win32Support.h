@@ -46,6 +46,73 @@ inline void Require(bool condition, const char* text) {
     }
 }
 
+struct FileIdentity {
+    DWORD volume, indexHigh, indexLow;
+};
+
+inline bool SameFileIdentity(const FileIdentity& left, const FileIdentity& right) {
+    return (left.volume || left.indexHigh || left.indexLow) && left.volume == right.volume &&
+           left.indexHigh == right.indexHigh && left.indexLow == right.indexLow;
+}
+
+class ModuleFile {
+    std::wstring loadedPath;
+    HANDLE file = INVALID_HANDLE_VALUE;
+
+  public:
+    explicit ModuleFile(const std::wstring& path) : loadedPath(path) {
+        // Keep the file object, not the loader's cached name. Sharing delete access
+        // permits renaming the containing directory while this module stays loaded.
+        file = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Require(file != INVALID_HANDLE_VALUE, "Cannot open module file metadata");
+    }
+
+    ModuleFile(const ModuleFile&) = delete;
+    ModuleFile& operator=(const ModuleFile&) = delete;
+
+    ~ModuleFile() {
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+        }
+    }
+
+    FileIdentity Identity() const {
+        BY_HANDLE_FILE_INFORMATION info{};
+        Require(GetFileInformationByHandle(file, &info) != FALSE,
+                "Cannot read module file identity");
+        return FileIdentity{info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow};
+    }
+
+    std::wstring Path() const {
+        wchar_t path[32768]{};
+        DWORD length =
+            GetFinalPathNameByHandleW(file, path, 32768, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (!length || length >= 32768) {
+            return loadedPath;
+        }
+        std::wstring result(path, length);
+        if (_wcsnicmp(result.c_str(), L"\\\\?\\UNC\\", 8) == 0) {
+            return L"\\\\" + result.substr(8);
+        }
+        if (result.compare(0, 4, L"\\\\?\\") == 0) {
+            return result.substr(4);
+        }
+        return result;
+    }
+};
+
+inline std::wstring ApplicationPath() {
+    static ModuleFile executable(ModulePath());
+    return executable.Path();
+}
+
+inline bool SameFile(const std::wstring& left, const std::wstring& right) {
+    ModuleFile leftFile(left), rightFile(right);
+    return SameFileIdentity(leftFile.Identity(), rightFile.Identity());
+}
+
 inline std::wstring DefaultProfile() {
     PWSTR path = nullptr;
     HRESULT hr =

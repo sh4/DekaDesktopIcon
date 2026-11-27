@@ -92,6 +92,7 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 .\validate-safety.ps1
 .\validate-display-scaling.ps1
 .\validate-resident.ps1
+.\validate-relocation.ps1
 .\validate-settings.ps1
 .\tests\Test-SettingsPublishing.ps1
 .\validate-sort.ps1
@@ -104,6 +105,7 @@ C++17 を使用し、`if` / `else` / `for` / `while` 等では一文でも中括
 
 ```powershell
 .\validate-explorer.ps1
+.\validate-relocation.ps1 -Explorer
 .\validate-explorer-sort.ps1
 .\validate-interaction.ps1 -Explorer
 .\validate-interaction.ps1 -Explorer -DropFeedbackOnly

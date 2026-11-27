@@ -169,6 +169,11 @@ void Status() {
         return;
     }
     EnsureImageList();
+    // GetModuleFileName retains the load-time path after a directory rename.
+    // The held file object follows that rename and identifies the loaded DLL itself.
+    static ModuleFile ownerModule(ModulePath(moduleHandle));
+    shared->ownerFile = ownerModule.Identity();
+    wcsncpy_s(shared->ownerModule, ownerModule.Path().c_str(), _TRUNCATE);
     shared->active = state.active;
     shared->size = state.active ? state.iconSize : 0;
     shared->subclassInstalled = state.active;
@@ -558,7 +563,6 @@ void Apply(HWND list, const SharedCommand& request) {
     state.contextTick = 0;
     state.contextPopup = nullptr;
     state.menuStyle.clear();
-    wcscpy_s(shared->ownerModule, ModulePath(moduleHandle).c_str());
     state.selectionAnchor = ListView_GetSelectionMark(list);
     state.moveCommits = state.nativeDrags = 0;
     state.deadline =

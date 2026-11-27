@@ -2,10 +2,12 @@
 // Copyright (c) 2026 sh4
 #pragma once
 #include "Win32Support.h"
+#include <cstddef>
+#include <type_traits>
 
 namespace deka {
 constexpr DWORD Magic = 0x414B4544; // "DEKA" in the command mapping.
-constexpr DWORD Version = 3;
+constexpr DWORD Version = 4;
 constexpr UINT_PTR ParentSubclassId = 0x44444901;
 constexpr UINT_PTR ListSubclassId = 0x44444902;
 constexpr UINT_PTR TimerId = 0x44444903;
@@ -42,14 +44,21 @@ struct SharedCommand {
     DWORD subclassInstalled, selectedCount;
     UINT64 leaseDeadline;
     wchar_t message[512];
+    FileIdentity ownerFile;
 };
 
+static_assert(std::is_standard_layout_v<SharedCommand> && std::is_trivial_v<SharedCommand>,
+              "The shared-memory protocol must remain a plain, fixed-layout record");
+
+// v2/v3 used the same prefix without a stable owner file identity.
+constexpr DWORD LegacyCommandBytes = static_cast<DWORD>(offsetof(SharedCommand, ownerFile));
+
 inline std::wstring MappingName(DWORD pid) {
-    return L"Local\\DekaDesktopIcon-v3-" + std::to_wstring(pid);
+    return L"Local\\DekaDesktopIcon-v4-" + std::to_wstring(pid);
 }
 
 inline UINT CommandMessage() {
-    return RegisterWindowMessageW(L"DekaDesktopIcon.Command.v3.20261017");
+    return RegisterWindowMessageW(L"DekaDesktopIcon.Command.v4.20261127");
 }
 
 } // namespace deka

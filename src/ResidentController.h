@@ -218,7 +218,7 @@ void OpenSettings() {
         CloseHandle(resident.settingsProcess);
         resident.settingsProcess = nullptr;
     }
-    std::wstring path = ParentPath(ModulePath()) + L"\\Settings\\DekaDesktopIcon.Settings.exe";
+    std::wstring path = ParentPath(ApplicationPath()) + L"\\Settings\\DekaDesktopIcon.Settings.exe";
     std::wstring args = QuoteArgument(path) + L" --owner-pid " +
                         std::to_wstring(GetCurrentProcessId()) + L" --profile " +
                         QuoteArgument(resident.profile);
@@ -517,7 +517,7 @@ HWND EnsureResident(const std::wstring& profile, bool test) {
     if (auto window = FindResident(test)) {
         return window;
     }
-    auto path = ModulePath();
+    auto path = ApplicationPath();
     auto args = QuoteArgument(path) + L" --resident --profile " + QuoteArgument(profile);
     if (test) {
         args += L" --test-host";

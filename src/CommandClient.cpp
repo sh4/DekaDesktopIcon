@@ -5,19 +5,20 @@
 
 namespace deka {
 namespace {
-void EnsurePreviousPatchIsInactive(const DesktopTarget& desktop) {
-    // The pre-rename build uses another mapping name. Do not stack subclasses
-    // over that active patch just because DekaDesktopIcon has a new identity.
-    auto name = L"Local\\ExplorerIconPatch-v2-" + std::to_wstring(desktop.pid);
+void CheckPreviousPatch(const DesktopTarget& desktop, const std::wstring& prefix, DWORD magic,
+                        DWORD version) {
+    // Older protocols use other mapping names. Never stack the new subclasses
+    // over a still-active legacy patch, even when both DLLs remain loaded.
+    auto name = prefix + std::to_wstring(desktop.pid);
     HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, name.c_str());
     if (!mapping) {
         Require(GetLastError() == ERROR_FILE_NOT_FOUND, "Cannot inspect previous patch state");
         return;
     }
     auto previous = static_cast<const SharedCommand*>(
-        MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedCommand)));
-    bool active = previous && previous->magic == 0x50494945 && previous->version == 2 &&
-                  previous->bytes == sizeof(SharedCommand) && previous->targetPid == desktop.pid &&
+        MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, LegacyCommandBytes));
+    bool active = previous && previous->magic == magic && previous->version == version &&
+                  previous->bytes == LegacyCommandBytes && previous->targetPid == desktop.pid &&
                   previous->active;
     bool readable = previous != nullptr;
     if (previous) {
@@ -27,6 +28,11 @@ void EnsurePreviousPatchIsInactive(const DesktopTarget& desktop) {
     Require(readable, "Cannot read previous patch state");
     Require(!active, "The previous tool is active. Restore it using its original folder before "
                      "using DekaDesktopIcon");
+}
+
+void EnsurePreviousPatchIsInactive(const DesktopTarget& desktop) {
+    CheckPreviousPatch(desktop, L"Local\\ExplorerIconPatch-v2-", 0x50494945, 2);
+    CheckPreviousPatch(desktop, L"Local\\DekaDesktopIcon-v3-", Magic, 3);
 }
 } // namespace
 
@@ -42,13 +48,13 @@ void ValidateTarget(const DesktopTarget& desktop) {
     Require(ok != FALSE, "Cannot read target image path");
     std::wstring expected;
     if (desktop.test) {
-        expected = ParentPath(ModulePath()) + L"\\DekaDesktopIconTestHost.exe";
+        expected = ParentPath(ApplicationPath()) + L"\\DekaDesktopIconTestHost.exe";
     } else {
         wchar_t windows[32768]{};
         GetWindowsDirectoryW(windows, 32768);
         expected = std::wstring(windows) + L"\\explorer.exe";
     }
-    Require(_wcsicmp(expected.c_str(), name) == 0,
+    Require(desktop.test ? SameFile(expected, name) : _wcsicmp(expected.c_str(), name) == 0,
             "Target is not this session's Windows Explorer or bundled test host");
     DWORD ourSession = 0, targetSession = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &ourSession);
@@ -90,9 +96,10 @@ SharedCommand SendCommand(const DesktopTarget& desktop, Command command, DWORD s
         Require(memory->magic == Magic && memory->version == Version &&
                     memory->bytes == sizeof(SharedCommand),
                 "Patch protocol mismatch");
-        std::wstring dllPath = ParentPath(ModulePath()) + L"\\DekaDesktopIconCore.dll";
+        std::wstring dllPath = ParentPath(ApplicationPath()) + L"\\DekaDesktopIconCore.dll";
         Require(dllPath.size() < 1024, "Patch DLL path is too long");
-        Require(!memory->active || _wcsicmp(memory->ownerModule, dllPath.c_str()) == 0,
+        ModuleFile dllFile(dllPath);
+        Require(!memory->active || SameFileIdentity(memory->ownerFile, dllFile.Identity()),
                 "Another copy is active. Restore using the controller from that same folder first");
         memory->listHwnd = reinterpret_cast<UINT64>(desktop.list);
         memory->command = static_cast<DWORD>(command);

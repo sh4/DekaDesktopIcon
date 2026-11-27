@@ -85,6 +85,9 @@ jobs:
       - name: Test settings publishing
         run: ./tests/Test-SettingsPublishing.ps1 -BinaryDirectory ./build/release-bin
 
+      - name: Test controller relocation
+        run: ./validate-relocation.ps1 -BinaryDirectory ./build/release-bin
+
       - name: Package release binaries
         id: package
         run: ./scripts/New-ReleasePackage.ps1
