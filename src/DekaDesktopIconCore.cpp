@@ -195,7 +195,7 @@ void Status() {
     wcsncpy_s(shared->ownerModule, ownerModule.Path().c_str(), _TRUNCATE);
     shared->active = state.active;
     shared->size = state.active ? state.iconSize : 0;
-    shared->subclassInstalled = state.active;
+    shared->subclassInstalled = state.parentSubclass || state.listSubclass;
     shared->leaseDeadline = state.deadline;
     shared->itemCount = state.listView && IsWindow(state.listView)
                             ? static_cast<DWORD>(ListView_GetItemCount(state.listView))
@@ -611,8 +611,11 @@ void Apply(HWND list, const SharedCommand& request) {
     state.customImages =
         ImageList_Create(state.iconSize, state.iconSize, ILC_COLOR32 | ILC_MASK, 1, 1);
     Require(state.customImages != nullptr, "Custom image list allocation failed");
-    Require(ImageList_SetImageCount(state.customImages, 1) != FALSE,
-            "Image list allocation failed");
+    if (!ImageList_SetImageCount(state.customImages, 1)) {
+        ImageList_Destroy(state.customImages);
+        state.customImages = nullptr;
+        throw std::runtime_error("Image list allocation failed");
+    }
     if (!SetWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId, 0)) {
         ImageList_Destroy(state.customImages);
         state.customImages = nullptr;
@@ -1058,20 +1061,44 @@ LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
         return 0;
     }
     if (message == WM_NCDESTROY) {
-        RemoveDropTarget(false);
+        try {
+            RemoveDropTarget(false);
+        } catch (...) {
+            state.dropTarget.Reset();
+            state.originalDropTarget.Reset();
+            state.originalDropRegistered = false;
+        }
         CancelInteraction();
+        state.pendingMoves.clear();
         state.active = false;
         ++state.generation;
+        state.deadline = 0;
+        state.syncPending = state.layoutPending = state.refreshing = false;
+        state.contextPending = false;
         KillTimer(hwnd, TimerId);
+        KillTimer(hwnd, MenuTestTimer);
         if (IsWindow(state.shellViewWindow)) {
             RemoveWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId);
         }
         RemoveWindowSubclass(hwnd, ListProc, ListSubclassId);
         state.parentSubclass = state.listSubclass = false;
+        state.listView = nullptr;
+        state.shellViewWindow = nullptr;
         if (shared) {
             shared->active = shared->subclassInstalled = 0;
             SetMessage(L"デスクトップが作り直されました。再適用してください。");
         }
+        LRESULT result = DefSubclassProc(hwnd, message, wParam, lParam);
+        if (state.customImages) {
+            ImageList_Destroy(state.customImages);
+            state.customImages = nullptr;
+        }
+        state.dragBitmap.reset();
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.pictures.clear();
+        }
+        return result;
     }
     return DefSubclassProc(hwnd, message, wParam, lParam);
 }
@@ -1094,7 +1121,7 @@ void Capture(const std::wstring& path) {
     Status();
 }
 
-void HandleCommand(HWND hwnd) {
+void HandleCommand(HWND hwnd, bool drain) {
     if (!shared) {
         mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE,
                                    MappingName(GetCurrentProcessId()).c_str());
@@ -1114,8 +1141,20 @@ void HandleCommand(HWND hwnd) {
         shared->listHwnd != reinterpret_cast<UINT64>(hwnd)) {
         return;
     }
+    auto finalize = [&] {
+        shared->active = state.active;
+        shared->subclassInstalled = state.parentSubclass || state.listSubclass;
+        bool detach = !state.active && !state.parentSubclass && !state.listSubclass;
+        bool drained = !detach || FinishUnload();
+        shared->callbacksRetained = callbackReference != nullptr;
+        InterlockedExchange(&shared->ack, drained ? CommandComplete : CommandDraining);
+    };
+    if (drain) {
+        finalize();
+        return;
+    }
     shared->error = 0;
-    if (!state.listView) {
+    if (!state.listView || !IsWindow(state.listView)) {
         state.listView = hwnd;
     }
     try {
@@ -1198,12 +1237,7 @@ void HandleCommand(HWND hwnd) {
         shared->error = ERROR_UNHANDLED_EXCEPTION;
         SetMessage(L"パッチの処理でエラーが発生しました。");
     }
-    auto command = static_cast<Command>(shared->command);
-    shared->callbacksRetained = callbackReference != nullptr;
-    bool detach = !shared->error && !state.active &&
-                  (command == Command::Restore || command == Command::Query);
-    InterlockedExchange(&shared->ack,
-                        detach && !FinishUnload() ? CommandDraining : CommandComplete);
+    finalize();
 }
 } // namespace
 
@@ -1215,7 +1249,7 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK DesktopHook(int code, WPARAM w
         // hooks.
         auto message = reinterpret_cast<MSG*>(lParam);
         if (message && message->message == CommandMessage()) {
-            HandleCommand(message->hwnd);
+            HandleCommand(message->hwnd, message->wParam == CommandDrainParam);
         }
     }
     return CallNextHookEx(nullptr, code, wParam, lParam);

@@ -25,6 +25,31 @@ int CALLBACK Compare(LPARAM left, LPARAM right, LPARAM direction) {
     return (left < right ? -1 : left > right ? 1 : 0) * static_cast<int>(direction);
 }
 
+void CreateTestListView(HWND hwnd) {
+    list = CreateWindowExW(0, WC_LISTVIEWW, L"DekaDesktopIcon test items",
+                           WS_CHILD | WS_VISIBLE | LVS_ICON | LVS_EDITLABELS | LVS_SHAREIMAGELISTS,
+                           0, 0, 1600, 1100, hwnd, reinterpret_cast<HMENU>(1),
+                           GetModuleHandleW(nullptr), nullptr);
+    SetWindowTheme(list, L"Explorer", nullptr);
+    if (!images) {
+        images = ImageList_Create(64, 64, ILC_COLOR32 | ILC_MASK, 1, 1);
+        ImageList_AddIcon(images, LoadIconW(nullptr, IDI_APPLICATION));
+    }
+    ListView_SetImageList(list, images, LVSIL_NORMAL);
+    ListView_SetIconSpacing(list, 100, 110);
+    for (int i = 0; i < 2; ++i) {
+        LVITEMW item{};
+        item.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
+        item.iItem = i;
+        item.iImage = 0;
+        item.lParam = 100 + i;
+        item.pszText =
+            const_cast<PWSTR>(i ? L"System32 (native item 101)" : L"Windows (native item 100)");
+        ListView_InsertItem(list, &item);
+        ListView_SetItemPosition32(list, i, 30 + i * 160, 40);
+    }
+}
+
 LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == TestDropTargetMessage && previewTarget) {
         previewTarget->AddRef();
@@ -87,26 +112,7 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         }
     }
     if (message == WM_CREATE) {
-        list = CreateWindowExW(
-            0, WC_LISTVIEWW, L"DekaDesktopIcon test items",
-            WS_CHILD | WS_VISIBLE | LVS_ICON | LVS_EDITLABELS | LVS_SHAREIMAGELISTS, 0, 0, 1600,
-            1100, hwnd, reinterpret_cast<HMENU>(1), GetModuleHandleW(nullptr), nullptr);
-        SetWindowTheme(list, L"Explorer", nullptr);
-        images = ImageList_Create(64, 64, ILC_COLOR32 | ILC_MASK, 1, 1);
-        ImageList_AddIcon(images, LoadIconW(nullptr, IDI_APPLICATION));
-        ListView_SetImageList(list, images, LVSIL_NORMAL);
-        ListView_SetIconSpacing(list, 100, 110);
-        for (int i = 0; i < 2; ++i) {
-            LVITEMW item{};
-            item.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
-            item.iItem = i;
-            item.iImage = 0;
-            item.lParam = 100 + i;
-            item.pszText =
-                const_cast<PWSTR>(i ? L"System32 (native item 101)" : L"Windows (native item 100)");
-            ListView_InsertItem(list, &item);
-            ListView_SetItemPosition32(list, i, 30 + i * 160, 40);
-        }
+        CreateTestListView(hwnd);
         if (dragPreviewHost) {
             EnableDragPreview();
         }
@@ -126,6 +132,34 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         return resized ? 1 : 0;
     }
     if (message == ExerciseMessage()) {
+        if (wParam == 5) {
+            SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+            for (int i = ListView_GetItemCount(list); i <= MaxItems; ++i) {
+                LVITEMW item{};
+                item.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
+                item.iItem = i;
+                item.iImage = 0;
+                item.lParam = 100 + (i & 1);
+                item.pszText = const_cast<PWSTR>(L"Overflow item");
+                if (ListView_InsertItem(list, &item) < 0) {
+                    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+                    return 0;
+                }
+            }
+            SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+            return ListView_GetItemCount(list) > MaxItems ? 1 : 0;
+        }
+        if (wParam == 6) {
+            if (list) {
+                if (previewTarget) {
+                    RevokeDragDrop(list);
+                }
+                DestroyWindow(list);
+                list = nullptr;
+            }
+            CreateTestListView(hwnd);
+            return list ? 1 : 0;
+        }
         SendMessageW(list, WM_SETREDRAW, FALSE, 0);
         bool ok = true;
         int attachedWidth = 0, attachedHeight = 0;
@@ -276,11 +310,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
     dragPreviewHost = argc == 2 && !wcscmp(args[1], L"--drag-preview");
     if (argc == 2 && !dragPreviewHost) {
-        WPARAM command = !wcscmp(args[1], L"--exercise-refresh")        ? 1
-                         : !wcscmp(args[1], L"--exercise-layout")       ? 2
-                         : !wcscmp(args[1], L"--exercise-null-refresh") ? 3
-                         : !wcscmp(args[1], L"--exercise-resize")       ? 4
-                                                                        : 0;
+        WPARAM command = !wcscmp(args[1], L"--exercise-refresh")          ? 1
+                         : !wcscmp(args[1], L"--exercise-layout")         ? 2
+                         : !wcscmp(args[1], L"--exercise-null-refresh")   ? 3
+                         : !wcscmp(args[1], L"--exercise-resize")         ? 4
+                         : !wcscmp(args[1], L"--exercise-overflow-items") ? 5
+                         : !wcscmp(args[1], L"--exercise-recreate-list")  ? 6
+                                                                          : 0;
         auto desktop = FindDesktop(true);
         DWORD_PTR result = 0;
         bool ok = command && desktop.parent &&

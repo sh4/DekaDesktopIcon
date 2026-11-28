@@ -177,7 +177,7 @@ SharedCommand SendCommand(const DesktopTarget& desktop, Command command, DWORD s
         while (memory->ack != CommandComplete && GetTickCount64() < deadline) {
             PumpControllerMessages();
             if (InterlockedCompareExchange(&memory->ack, 0, CommandDraining) == CommandDraining) {
-                Require(PostMessageW(desktop.list, CommandMessage(), 0, 0) != FALSE,
+                Require(PostMessageW(desktop.list, CommandMessage(), CommandDrainParam, 0) != FALSE,
                         "Cannot continue desktop DLL cleanup");
             }
         }
@@ -188,8 +188,7 @@ SharedCommand SendCommand(const DesktopTarget& desktop, Command command, DWORD s
         hook = nullptr;
         FreeLibrary(dll);
         dll = nullptr;
-        if (!response.error && !response.active &&
-            (command == Command::Restore || command == Command::Query)) {
+        if (!response.active && !response.subclassInstalled && !response.callbacksRetained) {
             WaitForCoreUnload(desktop, response.ownerBase);
         }
         UnmapViewOfFile(memory);

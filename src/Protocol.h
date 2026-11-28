@@ -9,6 +9,7 @@ namespace deka {
 constexpr DWORD Magic = 0x414B4544; // "DEKA" in the command mapping.
 constexpr DWORD Version = 5;
 constexpr LONG CommandComplete = 1, CommandDraining = 2;
+constexpr WPARAM CommandDrainParam = 0x44524E31;
 constexpr UINT_PTR ParentSubclassId = 0x44444901;
 constexpr UINT_PTR ListSubclassId = 0x44444902;
 constexpr UINT_PTR TimerId = 0x44444903;

@@ -28,6 +28,7 @@ public static class DekaUnloadTest {
     [DllImport("user32.dll")] static extern bool EnumThreadWindows(uint thread, Visit visit, IntPtr context);
     public delegate bool Visit(IntPtr window, IntPtr context);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, System.Text.StringBuilder name, int length);
+    [DllImport("user32.dll")] public static extern uint GetGuiResources(IntPtr process, uint flags);
     public static bool HasMenu(uint thread) {
         bool found = false;
         EnumThreadWindows(thread, (window, context) => {
@@ -45,9 +46,9 @@ if ([DekaUnloadTest]::Resident(-not $Explorer) -or
     (-not $Explorer -and [DekaUnloadTest]::FindWindow('DekaDesktopIcon.TestHost', $null) -ne [IntPtr]::Zero)) {
     throw 'Close the matching resident/test host before unload validation.'
 }
-function Invoke-App([string[]]$Options, [string]$Name) {
+function Invoke-App([string[]]$Options, [string]$Name, [int]$ExpectedExit = 0) {
     Invoke-DekaCommand -BinaryDirectory $app -Options $Options -Profile $profile `
-        -Report (Join-Path $root "$Name.json") -TestHost:(-not $Explorer)
+        -Report (Join-Path $root "$Name.json") -TestHost:(-not $Explorer) -ExpectedExit $ExpectedExit
 }
 $hostProcess = $null
 $residentProcess = $null
@@ -142,6 +143,78 @@ try {
             throw 'Exit did not finish after the image worker was released.'
         }
         Assert-Exited (Get-Content -Raw -Encoding utf8 -LiteralPath $report | ConvertFrom-Json)
+
+        # Edge case 1: Apply fails after acquiring GDI+ and its callback DLL reference.
+        $hostExe = Join-Path $app 'DekaDesktopIconTestHost.exe'
+        $resizeZero = Start-Process -FilePath $hostExe -ArgumentList '--display-size','0','0' -WindowStyle Hidden -PassThru
+        if (-not $resizeZero.WaitForExit(5000) -or $resizeZero.ExitCode -ne 0) {
+            throw 'Could not set zero test display size.'
+        }
+        $failedApply = Invoke-App @('--apply','--size','256','--lease','0') 'apply-failure' 1
+        if (-not $failedApply.error -or $failedApply.active -or $failedApply.subclassInstalled) {
+            throw 'Failed apply left the patch active or cleared its error.'
+        }
+        Assert-Core $false
+        Copy-Item -LiteralPath (Join-Path $BinaryDirectory 'DekaDesktopIconCore.dll') -Destination $dll -Force
+        $resizeBack = Start-Process -FilePath $hostExe -ArgumentList '--display-size','1600','1100' -WindowStyle Hidden -PassThru
+        if (-not $resizeBack.WaitForExit(5000) -or $resizeBack.ExitCode -ne 0) {
+            throw 'Could not restore test display size.'
+        }
+
+        # Edge case 2: Partial restore failure (ERROR_PARTIAL_COPY) while draining a nested menu
+        # must preserve its error across CommandDraining retries and still unload the DLL.
+        Invoke-App @('--apply','--size','256','--lease','0') 'before-partial-restore' | Out-Null
+        Assert-Core $true
+        Invoke-App @('--show-context-menu','background') 'partial-restore-menu' | Out-Null
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        while (-not [DekaUnloadTest]::HasMenu($before.thread) -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 20
+        }
+        if (-not [DekaUnloadTest]::HasMenu($before.thread)) {
+            throw 'The nested menu for partial restore never opened.'
+        }
+        $overflow = Start-Process -FilePath $hostExe -ArgumentList '--exercise-overflow-items' -WindowStyle Hidden -PassThru
+        if (-not $overflow.WaitForExit(5000) -or $overflow.ExitCode -ne 0) {
+            throw 'Could not overflow test host items.'
+        }
+        $partialRestore = Invoke-App @('--restore') 'partial-restore' 1
+        if ($partialRestore.error -ne 299 -or $partialRestore.active -or $partialRestore.subclassInstalled -or
+            $partialRestore.imageWidth -ne $before.imageWidth) {
+            throw 'Partial restore did not preserve ERROR_PARTIAL_COPY or restore drawing.'
+        }
+        Assert-Core $false
+        Copy-Item -LiteralPath (Join-Path $BinaryDirectory 'DekaDesktopIconCore.dll') -Destination $dll -Force
+
+        # Edge case 3: WM_NCDESTROY must release customImages without leaking GDI objects across recreations.
+        $recreate = Start-Process -FilePath $hostExe -ArgumentList '--exercise-recreate-list' -WindowStyle Hidden -PassThru
+        if (-not $recreate.WaitForExit(5000) -or $recreate.ExitCode -ne 0) {
+            throw 'Could not recreate test host ListView.'
+        }
+        Invoke-App @('--apply','--size','256','--lease','0') 'recreate-warmup-apply' | Out-Null
+        $recreate = Start-Process -FilePath $hostExe -ArgumentList '--exercise-recreate-list' -WindowStyle Hidden -PassThru
+        if (-not $recreate.WaitForExit(5000) -or $recreate.ExitCode -ne 0) {
+            throw 'Could not recreate test host ListView during warmup.'
+        }
+        Invoke-App @('--restore') 'recreate-warmup-restore' | Out-Null
+        Assert-Core $false
+        $hostProc = Get-Process -Id $targetPid
+        $gdiBeforeRecreate = [DekaUnloadTest]::GetGuiResources($hostProc.Handle, 0)
+        for ($i = 0; $i -lt 4; $i++) {
+            Invoke-App @('--apply','--size','512','--lease','0') "recreate-apply-$i" | Out-Null
+            Assert-Core $true
+            $recreate = Start-Process -FilePath $hostExe -ArgumentList '--exercise-recreate-list' -WindowStyle Hidden -PassThru
+            if (-not $recreate.WaitForExit(5000) -or $recreate.ExitCode -ne 0) {
+                throw "Could not recreate test host ListView on iteration $i."
+            }
+        }
+        Invoke-App @('--restore') 'recreate-final-restore' | Out-Null
+        Assert-Core $false
+        Copy-Item -LiteralPath (Join-Path $BinaryDirectory 'DekaDesktopIconCore.dll') -Destination $dll -Force
+        $hostProc.Refresh()
+        $gdiAfterRecreate = [DekaUnloadTest]::GetGuiResources($hostProc.Handle, 0)
+        if ($gdiAfterRecreate -gt $gdiBeforeRecreate) {
+            throw "WM_NCDESTROY leaked GDI objects across ListView recreations: before=$gdiBeforeRecreate after=$gdiAfterRecreate."
+        }
     }
     Invoke-App @('--enable','--size','256','--lease','1') 'trial' | Out-Null
     $residentProcess = Get-Process -Id ([DekaUnloadTest]::Resident(-not $Explorer))
@@ -156,6 +229,8 @@ try {
         passed = $true; explorer = [bool]$Explorer; targetPid = $targetPid
         disableUnloaded = $true; exitCycles = 8; binaryReplaceable = $true
         nestedMenuExit = (-not $Explorer); imageWorkerDrain = (-not $Explorer)
+        applyFailureUnloaded = (-not $Explorer); partialRestoreUnloaded = (-not $Explorer)
+        recreateListUnloaded = (-not $Explorer)
         trialUnloaded = $true; explorerRestarted = $false
     } | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath (Join-Path $root 'summary.json')
     Get-Content -Encoding utf8 -LiteralPath (Join-Path $root 'summary.json')

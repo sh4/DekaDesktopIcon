@@ -159,10 +159,24 @@ void BuildDragBitmap(int onlyItem = -1) {
     graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
     graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
-    HDC dc = GetDC(state.listView);
+
+    struct WindowDc {
+        HWND window;
+        HDC handle;
+
+        explicit WindowDc(HWND target) : window(target), handle(GetDC(target)) {
+        }
+
+        ~WindowDc() {
+            if (handle) {
+                ReleaseDC(window, handle);
+            }
+        }
+    } dc(state.listView);
+
     HFONT nativeFont = reinterpret_cast<HFONT>(SendMessageW(state.listView, WM_GETFONT, 0, 0));
-    Gdiplus::Font font(dc, nativeFont ? nativeFont
-                                      : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+    Gdiplus::Font font(
+        dc.handle, nativeFont ? nativeFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
     Gdiplus::StringFormat format;
     format.SetAlignment(Gdiplus::StringAlignmentCenter);
     format.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
@@ -218,7 +232,6 @@ void BuildDragBitmap(int onlyItem = -1) {
         graphics.DrawString(state.items[i].name.c_str(), -1, &font, shifted, &format, &shadow);
         graphics.DrawString(state.items[i].name.c_str(), -1, &font, label, &format, &text);
     }
-    ReleaseDC(state.listView, dc);
     state.dragHotspot =
         POINT{std::clamp(LONG((state.downView.x - bounds.left) * scale), 0L, LONG(width - 1)),
               std::clamp(LONG((state.downView.y - bounds.top) * scale), 0L, LONG(height - 1))};
