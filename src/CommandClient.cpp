@@ -2,11 +2,12 @@
 // Copyright (c) 2026 sh4
 #include "CommandClient.h"
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 namespace deka {
 namespace {
 void CheckPreviousPatch(const DesktopTarget& desktop, const std::wstring& prefix, DWORD magic,
-                        DWORD version) {
+                        DWORD version, DWORD bytes) {
     // Older protocols use other mapping names. Never stack the new subclasses
     // over a still-active legacy patch, even when both DLLs remain loaded.
     auto name = prefix + std::to_wstring(desktop.pid);
@@ -15,10 +16,10 @@ void CheckPreviousPatch(const DesktopTarget& desktop, const std::wstring& prefix
         Require(GetLastError() == ERROR_FILE_NOT_FOUND, "Cannot inspect previous patch state");
         return;
     }
-    auto previous = static_cast<const SharedCommand*>(
-        MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, LegacyCommandBytes));
+    auto previous =
+        static_cast<const SharedCommand*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, bytes));
     bool active = previous && previous->magic == magic && previous->version == version &&
-                  previous->bytes == LegacyCommandBytes && previous->targetPid == desktop.pid &&
+                  previous->bytes == bytes && previous->targetPid == desktop.pid &&
                   previous->active;
     bool readable = previous != nullptr;
     if (previous) {
@@ -31,8 +32,58 @@ void CheckPreviousPatch(const DesktopTarget& desktop, const std::wstring& prefix
 }
 
 void EnsurePreviousPatchIsInactive(const DesktopTarget& desktop) {
-    CheckPreviousPatch(desktop, L"Local\\ExplorerIconPatch-v2-", 0x50494945, 2);
-    CheckPreviousPatch(desktop, L"Local\\DekaDesktopIcon-v3-", Magic, 3);
+    CheckPreviousPatch(desktop, L"Local\\ExplorerIconPatch-v2-", 0x50494945, 2, LegacyCommandBytes);
+    CheckPreviousPatch(desktop, L"Local\\DekaDesktopIcon-v3-", Magic, 3, LegacyCommandBytes);
+    CheckPreviousPatch(desktop, L"Local\\DekaDesktopIcon-v4-", Magic, 4, Version4CommandBytes);
+}
+
+void PumpControllerMessages() {
+    MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    MSG pending{};
+    while (PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&pending);
+        DispatchMessageW(&pending);
+    }
+}
+
+void WaitForCoreUnload(const DesktopTarget& desktop, UINT64 moduleBase) {
+    if (!moduleBase) {
+        return;
+    }
+    UINT64 deadline = GetTickCount64() + 2000;
+    while (GetTickCount64() < deadline) {
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, desktop.pid);
+        if (snapshot == INVALID_HANDLE_VALUE) {
+            DWORD error = GetLastError();
+            if (error == ERROR_INVALID_PARAMETER) {
+                return; // The target process itself exited.
+            }
+            Require(error == ERROR_BAD_LENGTH, "Cannot verify desktop DLL unload");
+        } else {
+            MODULEENTRY32W entry{sizeof(entry)};
+            bool loaded = false;
+            BOOL found = Module32FirstW(snapshot, &entry);
+            DWORD error = found ? ERROR_SUCCESS : GetLastError();
+            while (found) {
+                if (reinterpret_cast<UINT64>(entry.modBaseAddr) == moduleBase) {
+                    loaded = true;
+                    break;
+                }
+                found = Module32NextW(snapshot, &entry);
+                error = found ? ERROR_SUCCESS : GetLastError();
+            }
+            CloseHandle(snapshot);
+            Require(loaded || error == ERROR_NO_MORE_FILES, "Cannot enumerate desktop modules");
+            if (!loaded) {
+                return;
+            }
+        }
+        // Give USER32 a trip through the desktop's message loop to discard the
+        // removed hook's implicit loader reference, without injecting more code.
+        PostMessageW(desktop.list, WM_NULL, 0, 0);
+        PumpControllerMessages();
+    }
+    throw std::runtime_error("Desktop drawing was restored, but the DLL has not unloaded yet");
 }
 } // namespace
 
@@ -63,7 +114,8 @@ void ValidateTarget(const DesktopTarget& desktop) {
 }
 
 SharedCommand SendCommand(const DesktopTarget& desktop, Command command, DWORD size, DWORD lease,
-                          const std::wstring& profile, const std::wstring& capture) {
+                          const std::wstring& profile, const std::wstring& capture,
+                          HANDLE* retainedMapping) {
     ValidateTarget(desktop);
     EnsurePreviousPatchIsInactive(desktop);
     HANDLE mutex =
@@ -99,8 +151,10 @@ SharedCommand SendCommand(const DesktopTarget& desktop, Command command, DWORD s
         std::wstring dllPath = ParentPath(ApplicationPath()) + L"\\DekaDesktopIconCore.dll";
         Require(dllPath.size() < 1024, "Patch DLL path is too long");
         ModuleFile dllFile(dllPath);
-        Require(!memory->active || SameFileIdentity(memory->ownerFile, dllFile.Identity()),
-                "Another copy is active. Restore using the controller from that same folder first");
+        Require((!memory->active && !memory->callbacksRetained) ||
+                    SameFileIdentity(memory->ownerFile, dllFile.Identity()),
+                "Another copy is active or finishing cleanup. Restore using the controller from "
+                "that same folder first");
         memory->listHwnd = reinterpret_cast<UINT64>(desktop.list);
         memory->command = static_cast<DWORD>(command);
         memory->requestedSize = size;
@@ -120,24 +174,34 @@ SharedCommand SendCommand(const DesktopTarget& desktop, Command command, DWORD s
         Require(PostMessageW(desktop.list, CommandMessage(), 0, 0) != FALSE,
                 "Cannot post Explorer command");
         UINT64 deadline = GetTickCount64() + 12000;
-        while (memory->ack != 1 && GetTickCount64() < deadline) {
-            MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-            MSG pending{};
-            while (PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&pending);
-                DispatchMessageW(&pending);
+        while (memory->ack != CommandComplete && GetTickCount64() < deadline) {
+            PumpControllerMessages();
+            if (InterlockedCompareExchange(&memory->ack, 0, CommandDraining) == CommandDraining) {
+                Require(PostMessageW(desktop.list, CommandMessage(), 0, 0) != FALSE,
+                        "Cannot continue desktop DLL cleanup");
             }
         }
-        Require(memory->ack == 1,
-                "Explorer did not acknowledge command; a timed patch will still auto-restore");
+        Require(memory->ack == CommandComplete,
+                "Desktop command or DLL cleanup is still busy; retry after the current operation");
         SharedCommand response = *memory;
-        UnhookWindowsHookEx(hook);
+        Require(UnhookWindowsHookEx(hook) != FALSE, "Cannot remove desktop command hook");
         hook = nullptr;
         FreeLibrary(dll);
         dll = nullptr;
+        if (!response.error && !response.active &&
+            (command == Command::Restore || command == Command::Query)) {
+            WaitForCoreUnload(desktop, response.ownerBase);
+        }
         UnmapViewOfFile(memory);
         memory = nullptr;
-        CloseHandle(map);
+        if (retainedMapping) {
+            if (*retainedMapping) {
+                CloseHandle(*retainedMapping);
+            }
+            *retainedMapping = map;
+        } else {
+            CloseHandle(map);
+        }
         map = nullptr;
         ReleaseMutex(mutex);
         CloseHandle(mutex);

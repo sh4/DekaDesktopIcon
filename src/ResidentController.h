@@ -22,6 +22,7 @@ struct ResidentState {
     HWND window = nullptr;
     HICON icon = nullptr;
     HANDLE settingsProcess = nullptr;
+    HANDLE patchMapping = nullptr; // Preserve status after the desktop DLL unloads.
     DesktopTarget desktop{};
     SharedCommand status{};
     std::wstring profile, message;
@@ -142,10 +143,11 @@ bool ChangeEnlargement(bool enable, bool save, bool notify) {
     try {
         auto desktop = FindDesktop(resident.test);
         // With Explorer gone there is no live patch to restore; quitting must still work.
-        auto status = !enable && !desktop.list
-                          ? SharedCommand{}
-                          : SendCommand(desktop, enable ? Command::Apply : Command::Restore,
-                                        resident.size, resident.lease, resident.profile);
+        auto status =
+            !enable && !desktop.list
+                ? SharedCommand{}
+                : SendCommand(desktop, enable ? Command::Apply : Command::Restore, resident.size,
+                              resident.lease, resident.profile, L"", &resident.patchMapping);
         resident.desktop = desktop;
         resident.status = status;
         resident.lastError = status.error;
@@ -296,6 +298,10 @@ void PollResident() {
         if (resident.status.active && !status.active) {
             // A trial or an explicit external restore must stay disabled.
             resident.enabled = false;
+            // Expiry restores on the desktop thread. Complete its asynchronous
+            // worker/COM teardown through a fresh command hook before unloading.
+            ChangeEnlargement(false, false, false);
+            return;
         }
         if (status.active != resident.status.active || status.size != resident.status.size) {
             resident.status = status;
@@ -420,6 +426,10 @@ LRESULT CALLBACK ResidentProc(HWND window, UINT message, WPARAM wParam, LPARAM l
     }
     if (message == WM_DESTROY) {
         KillTimer(window, ResidentTimer);
+        if (resident.patchMapping) {
+            CloseHandle(resident.patchMapping);
+            resident.patchMapping = nullptr;
+        }
         NOTIFYICONDATAW data{sizeof(data)};
         data.hWnd = window;
         data.uID = 1;

@@ -7,7 +7,8 @@
 
 namespace deka {
 constexpr DWORD Magic = 0x414B4544; // "DEKA" in the command mapping.
-constexpr DWORD Version = 4;
+constexpr DWORD Version = 5;
+constexpr LONG CommandComplete = 1, CommandDraining = 2;
 constexpr UINT_PTR ParentSubclassId = 0x44444901;
 constexpr UINT_PTR ListSubclassId = 0x44444902;
 constexpr UINT_PTR TimerId = 0x44444903;
@@ -45,6 +46,8 @@ struct SharedCommand {
     UINT64 leaseDeadline;
     wchar_t message[512];
     FileIdentity ownerFile;
+    UINT64 ownerBase;
+    DWORD callbacksRetained;
 };
 
 static_assert(std::is_standard_layout_v<SharedCommand> && std::is_trivial_v<SharedCommand>,
@@ -52,13 +55,14 @@ static_assert(std::is_standard_layout_v<SharedCommand> && std::is_trivial_v<Shar
 
 // v2/v3 used the same prefix without a stable owner file identity.
 constexpr DWORD LegacyCommandBytes = static_cast<DWORD>(offsetof(SharedCommand, ownerFile));
+constexpr DWORD Version4CommandBytes = static_cast<DWORD>(offsetof(SharedCommand, ownerBase));
 
 inline std::wstring MappingName(DWORD pid) {
-    return L"Local\\DekaDesktopIcon-v4-" + std::to_wstring(pid);
+    return L"Local\\DekaDesktopIcon-v5-" + std::to_wstring(pid);
 }
 
 inline UINT CommandMessage() {
-    return RegisterWindowMessageW(L"DekaDesktopIcon.Command.v4.20261127");
+    return RegisterWindowMessageW(L"DekaDesktopIcon.Command.v5.20261128");
 }
 
 } // namespace deka

@@ -469,9 +469,15 @@ class DesktopDropSource final : public IDropSource {
 
     explicit DesktopDropSource(IDataObject* object = nullptr, bool hostOnly = false)
         : data(object), ownWindowOnly(hostOnly) {
+        ++liveComObjects;
+    }
+
+    ~DesktopDropSource() {
+        --liveComObjects;
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        UiCallbackScope callback;
         if (!object) {
             return E_POINTER;
         }
@@ -485,10 +491,12 @@ class DesktopDropSource final : public IDropSource {
     }
 
     ULONG STDMETHODCALLTYPE AddRef() override {
+        UiCallbackScope callback;
         return ++references;
     }
 
     ULONG STDMETHODCALLTYPE Release() override {
+        UiCallbackScope callback;
         ULONG remaining = --references;
         if (!remaining) {
             delete this;
@@ -497,6 +505,7 @@ class DesktopDropSource final : public IDropSource {
     }
 
     HRESULT STDMETHODCALLTYPE QueryContinueDrag(BOOL escape, DWORD keys) override {
+        UiCallbackScope callback;
         if (escape || !state.active) {
             return DRAGDROP_S_CANCEL;
         }
@@ -527,6 +536,7 @@ class DesktopDropSource final : public IDropSource {
     }
 
     HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD) override {
+        UiCallbackScope callback;
         UpdateDropImage(data.Get());
         return DRAGDROP_S_USEDEFAULTCURSORS;
     }

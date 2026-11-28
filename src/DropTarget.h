@@ -130,9 +130,15 @@ class PaintedDropTarget final : public IDropTarget {
         Require(SUCCEEDED(CoCreateInstance(CLSID_DragDropHelper, nullptr, CLSCTX_INPROC_SERVER,
                                            IID_PPV_ARGS(&images))),
                 "Shell drop image helper unavailable");
+        ++liveComObjects;
+    }
+
+    ~PaintedDropTarget() {
+        --liveComObjects;
     }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        UiCallbackScope callback;
         if (!object) {
             return E_POINTER;
         }
@@ -146,10 +152,12 @@ class PaintedDropTarget final : public IDropTarget {
     }
 
     ULONG STDMETHODCALLTYPE AddRef() override {
+        UiCallbackScope callback;
         return ++references;
     }
 
     ULONG STDMETHODCALLTYPE Release() override {
+        UiCallbackScope callback;
         ULONG remaining = --references;
         if (!remaining) {
             delete this;
@@ -159,6 +167,7 @@ class PaintedDropTarget final : public IDropTarget {
 
     HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data, DWORD keys, POINTL screen,
                                         DWORD* effect) override {
+        UiCallbackScope callback;
         if (!effect) {
             return E_POINTER;
         }
@@ -175,6 +184,7 @@ class PaintedDropTarget final : public IDropTarget {
     }
 
     HRESULT STDMETHODCALLTYPE DragOver(DWORD keys, POINTL screen, DWORD* effect) override {
+        UiCallbackScope callback;
         if (!effect) {
             return E_POINTER;
         }
@@ -191,6 +201,7 @@ class PaintedDropTarget final : public IDropTarget {
     }
 
     HRESULT STDMETHODCALLTYPE DragLeave() override {
+        UiCallbackScope callback;
         if (!entered) {
             return S_OK;
         }
@@ -207,6 +218,7 @@ class PaintedDropTarget final : public IDropTarget {
 
     HRESULT STDMETHODCALLTYPE Drop(IDataObject* data, DWORD keys, POINTL screen,
                                    DWORD* effect) override {
+        UiCallbackScope callback;
         if (!effect) {
             return E_POINTER;
         }
@@ -252,7 +264,12 @@ void InstallDropTarget() {
 void RemoveDropTarget(bool restoreNative) {
     if (state.dropTarget) {
         state.dropTarget->DragLeave();
-        RevokeDragDrop(state.listView);
+        HRESULT revoked = RevokeDragDrop(state.listView);
+        Require(SUCCEEDED(revoked) || revoked == DRAGDROP_E_NOTREGISTERED ||
+                    (!IsWindow(state.listView) && revoked == DRAGDROP_E_INVALIDHWND),
+                "Cannot revoke painted desktop drop target");
+        Require(SUCCEEDED(CoDisconnectObject(state.dropTarget.Get(), 0)),
+                "Cannot disconnect painted desktop drop target");
         if (restoreNative && state.originalDropRegistered && IsWindow(state.listView)) {
             if (FAILED(RegisterDragDrop(state.listView, state.originalDropTarget.Get())) &&
                 shared) {

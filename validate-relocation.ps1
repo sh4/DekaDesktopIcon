@@ -31,7 +31,7 @@ public static class DekaRelocationTest {
     }
     public static bool HasTestHost() { return FindWindow("DekaDesktopIcon.TestHost", null) != IntPtr.Zero; }
     public static void EmergencyRestore(bool test, uint expectedPid) {
-        var command = RegisterWindowMessage("DekaDesktopIcon.Command.v4.20261127");
+        var command = RegisterWindowMessage("DekaDesktopIcon.Command.v5.20261128");
         EnumWindows((top, context) => {
             var parent = test ? (top == FindWindow("DekaDesktopIcon.TestHost", null) ? top : IntPtr.Zero)
                               : FindWindowEx(top, IntPtr.Zero, "SHELLDLL_DefView", null);

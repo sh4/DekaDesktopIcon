@@ -6,6 +6,7 @@
 namespace deka {
 void ValidateTarget(const DesktopTarget& desktop);
 SharedCommand SendCommand(const DesktopTarget& desktop, Command command, DWORD size, DWORD lease,
-                          const std::wstring& profile, const std::wstring& capture = L"");
+                          const std::wstring& profile, const std::wstring& capture = L"",
+                          HANDLE* retainedMapping = nullptr);
 DWORD RecoverLayout(const std::wstring& profile);
 } // namespace deka

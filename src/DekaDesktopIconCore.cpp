@@ -17,11 +17,27 @@ HMODULE callbackReference = nullptr;
 HANDLE mapping = nullptr;
 SharedCommand* shared = nullptr;
 
+// Every entry from the desktop UI (including OLE's nested message loops) is
+// counted. Only an outermost, externally installed hook may release our module
+// reference: Windows keeps that hook's code loaded until the hook has returned.
+std::atomic<ULONG> uiCallbacks{0}, liveComObjects{0};
+
+struct UiCallbackScope {
+    UiCallbackScope() {
+        ++uiCallbacks;
+    }
+
+    ~UiCallbackScope() {
+        --uiCallbacks;
+    }
+};
+
 struct State {
     // The shell owns both windows. All mutations run on their UI thread.
     HWND listView = nullptr;
     HWND shellViewWindow = nullptr;
     bool active = false;
+    bool parentSubclass = false, listSubclass = false;
     bool testHost = false;
     bool refreshing = false;
     bool baseGeometry = false;
@@ -95,6 +111,7 @@ struct State {
     std::map<std::wstring, std::shared_ptr<Picture>> pictures;
     std::mutex mutex;
     std::atomic<ULONG> generation{0};
+    std::vector<HANDLE> imageWorkers;
     ULONG_PTR gdiplus = 0;
     UINT64 deadline = 0;
 } state;
@@ -173,6 +190,8 @@ void Status() {
     // The held file object follows that rename and identifies the loaded DLL itself.
     static ModuleFile ownerModule(ModulePath(moduleHandle));
     shared->ownerFile = ownerModule.Identity();
+    shared->ownerBase = reinterpret_cast<UINT64>(moduleHandle);
+    shared->callbacksRetained = callbackReference != nullptr;
     wcsncpy_s(shared->ownerModule, ownerModule.Path().c_str(), _TRUNCATE);
     shared->active = state.active;
     shared->size = state.active ? state.iconSize : 0;
@@ -258,6 +277,20 @@ DWORD WINAPI ImageWorker(void* argument) {
     return 0;
 }
 
+bool ImageWorkersFinished() {
+    auto& workers = state.imageWorkers;
+    workers.erase(std::remove_if(workers.begin(), workers.end(),
+                                 [](HANDLE worker) {
+                                     if (WaitForSingleObject(worker, 0) != WAIT_OBJECT_0) {
+                                         return false;
+                                     }
+                                     CloseHandle(worker);
+                                     return true;
+                                 }),
+                  workers.end());
+    return workers.empty();
+}
+
 bool RefreshItems(bool force = false) {
     auto items = ReadDesktopItems(state.listView, state.testHost);
     bool same = !force && items.size() == state.items.size();
@@ -283,10 +316,17 @@ bool RefreshItems(bool force = false) {
     work->generation = generation;
     work->list = state.listView;
     work->items = state.items;
+    ImageWorkersFinished();
+    // Allocate the slot before starting the thread, so allocation failure cannot
+    // lose the only handle proving that the worker has really left this DLL.
+    state.imageWorkers.push_back(nullptr);
     HANDLE worker = CreateThread(nullptr, 0, ImageWorker, work.get(), 0, nullptr);
+    if (!worker) {
+        state.imageWorkers.pop_back();
+    }
     Require(worker != nullptr, "Image worker creation failed");
     work.release();
-    CloseHandle(worker);
+    state.imageWorkers.back() = worker;
     return true;
 }
 
@@ -377,7 +417,7 @@ LRESULT CALLBACK ParentProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 LRESULT CALLBACK ListProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
 
 void Restore() {
-    if (!state.active) {
+    if (!state.active && !state.parentSubclass && !state.listSubclass) {
         Status();
         return;
     }
@@ -393,11 +433,16 @@ void Restore() {
     state.deadline = 0;
     state.syncPending = state.layoutPending = state.refreshing = false;
     KillTimer(state.listView, TimerId);
-    if (IsWindow(state.shellViewWindow)) {
-        RemoveWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId);
+    if (state.parentSubclass && IsWindow(state.shellViewWindow)) {
+        Require(RemoveWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId) != FALSE,
+                "Cannot remove parent subclass");
     }
+    state.parentSubclass = false;
     if (IsWindow(state.listView)) {
-        RemoveWindowSubclass(state.listView, ListProc, ListSubclassId);
+        Require(!state.listSubclass ||
+                    RemoveWindowSubclass(state.listView, ListProc, ListSubclassId) != FALSE,
+                "Cannot remove desktop subclass");
+        state.listSubclass = false;
         SendMessageW(state.listView, WM_SETREDRAW, FALSE, 0);
         auto alignment = GetWindowLongPtrW(state.listView, GWL_STYLE) & LVS_AUTOARRANGE;
         DWORD alignmentMask = LVS_EX_SNAPTOGRID | LVS_EX_AUTOAUTOARRANGE;
@@ -453,6 +498,7 @@ void Restore() {
         ImageList_Destroy(state.customImages);
         state.customImages = nullptr;
     }
+    state.listSubclass = false;
     {
         std::lock_guard<std::mutex> lock(state.mutex);
         state.pictures.clear();
@@ -461,6 +507,32 @@ void Restore() {
         SetMessage(L"解除しました。元の画像リスト・間隔・配置を復元しました。");
     }
     Status();
+}
+
+bool FinishUnload() {
+    // Never wait on the desktop thread: thumbnail extraction may call back into
+    // Explorer's STA. Let its message loop and any menu/drag stack unwind first.
+    if (state.active || state.parentSubclass || state.listSubclass || uiCallbacks != 1 ||
+        liveComObjects || !ImageWorkersFinished()) {
+        return false;
+    }
+    state.dragBitmap.reset();
+    state.pictures.clear();
+    if (state.customImages) {
+        ImageList_Destroy(state.customImages);
+        state.customImages = nullptr;
+    }
+    if (state.gdiplus) {
+        Gdiplus::GdiplusShutdown(state.gdiplus);
+        state.gdiplus = 0;
+    }
+    if (callbackReference) {
+        HMODULE reference = callbackReference;
+        callbackReference = nullptr;
+        FreeLibrary(reference);
+    }
+    shared->callbacksRetained = 0;
+    return true;
 }
 
 void Apply(HWND list, const SharedCommand& request) {
@@ -546,12 +618,15 @@ void Apply(HWND list, const SharedCommand& request) {
         state.customImages = nullptr;
         throw std::runtime_error("Parent subclass failed");
     }
+    state.parentSubclass = true;
     if (!SetWindowSubclass(list, ListProc, ListSubclassId, 0)) {
-        RemoveWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId);
+        state.parentSubclass =
+            !RemoveWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId);
         ImageList_Destroy(state.customImages);
         state.customImages = nullptr;
         throw std::runtime_error("List subclass failed");
     }
+    state.listSubclass = true;
     state.active = true;
     shared->customPaintCount = 0;
     shared->lastDrawWidth = shared->lastDrawHeight = 0;
@@ -795,6 +870,7 @@ void DrawItem(NMLVCUSTOMDRAW* draw) {
 
 LRESULT CALLBACK ParentProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR,
                             DWORD_PTR) {
+    UiCallbackScope callback;
     ObserveContextMenu(message, wParam, lParam);
     if (state.active &&
         (message == WM_DISPLAYCHANGE || message == WM_SIZE || message == WM_DPICHANGED ||
@@ -851,6 +927,7 @@ LRESULT CALLBACK ParentProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
 LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR,
                           DWORD_PTR) {
+    UiCallbackScope callback;
     ObserveContextMenu(message, wParam, lParam);
     if (state.active &&
         (message == WM_DISPLAYCHANGE || message == WM_SIZE || message == WM_DPICHANGED ||
@@ -990,6 +1067,7 @@ LRESULT CALLBACK ListProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam,
             RemoveWindowSubclass(state.shellViewWindow, ParentProc, ParentSubclassId);
         }
         RemoveWindowSubclass(hwnd, ListProc, ListSubclassId);
+        state.parentSubclass = state.listSubclass = false;
         if (shared) {
             shared->active = shared->subclassInstalled = 0;
             SetMessage(L"デスクトップが作り直されました。再適用してください。");
@@ -1037,7 +1115,13 @@ void HandleCommand(HWND hwnd) {
         return;
     }
     shared->error = 0;
+    if (!state.listView) {
+        state.listView = hwnd;
+    }
     try {
+        // Publish ownership even if Apply fails after acquiring its callback
+        // reference, so a later restore can still identify and unload this DLL.
+        Status();
         switch (static_cast<Command>(shared->command)) {
         case Command::Apply: {
             SharedCommand request = *shared;
@@ -1048,9 +1132,6 @@ void HandleCommand(HWND hwnd) {
             Restore();
             break;
         case Command::Query:
-            if (!state.listView) {
-                state.listView = hwnd;
-            }
             Status();
             break;
         case Command::Capture:
@@ -1117,12 +1198,18 @@ void HandleCommand(HWND hwnd) {
         shared->error = ERROR_UNHANDLED_EXCEPTION;
         SetMessage(L"パッチの処理でエラーが発生しました。");
     }
-    InterlockedExchange(&shared->ack, 1);
+    auto command = static_cast<Command>(shared->command);
+    shared->callbacksRetained = callbackReference != nullptr;
+    bool detach = !shared->error && !state.active &&
+                  (command == Command::Restore || command == Command::Query);
+    InterlockedExchange(&shared->ack,
+                        detach && !FinishUnload() ? CommandDraining : CommandComplete);
 }
 } // namespace
 
 extern "C" __declspec(dllexport) LRESULT CALLBACK DesktopHook(int code, WPARAM wParam,
                                                               LPARAM lParam) {
+    UiCallbackScope callback;
     if (code >= 0 && wParam == PM_REMOVE) {
         // Run outside SendMessage: Explorer's STA cannot make COM call-outs from input-synchronous
         // hooks.

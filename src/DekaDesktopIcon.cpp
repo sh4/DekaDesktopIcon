@@ -221,9 +221,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                                         : ResidentAction::Disable;
                 request.size = size;
                 request.lease = lease;
-                bool accepted = RequestResident(window, request);
+                // Exit destroys the resident and its status handle. Keep the
+                // result mapping alive until this caller has copied the reply.
                 auto desktop = FindDesktop(test);
+                HANDLE reply = desktop.pid ? OpenFileMappingW(FILE_MAP_READ, FALSE,
+                                                              MappingName(desktop.pid).c_str())
+                                           : nullptr;
+                bool accepted = RequestResident(window, request);
+                desktop = FindDesktop(test);
                 auto status = ReadResidentPatch(desktop);
+                if (reply) {
+                    CloseHandle(reply);
+                }
                 if (!accepted) {
                     status.error = static_cast<DWORD>(InspectResident(window, 3));
                     if (!status.error) {
